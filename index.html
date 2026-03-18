@@ -1,0 +1,3311 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>NSCA / STARDUCT – Mã Sản Phẩm 2026 V15</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+// ══════════════════════════════════════════════
+// ⚠️ EMAILJS CONFIG
+// ══════════════════════════════════════════════
+const EMAILJS_PUBLIC_KEY   = 'YOUR_PUBLIC_KEY';
+const EMAILJS_SERVICE_ID   = 'YOUR_SERVICE_ID';
+const EMAILJS_TEMPLATE_ID  = 'YOUR_TEMPLATE_ID';
+(function(){
+  if(EMAILJS_PUBLIC_KEY !== 'YOUR_PUBLIC_KEY')
+    emailjs.init({publicKey: EMAILJS_PUBLIC_KEY});
+})();
+
+// ══════════════════════════════════════════════
+// 🗄️ SUPABASE CONFIG
+// URL và Key lấy từ: https://supabase.com → Project Settings → API
+// ══════════════════════════════════════════════
+const SUPA_URL = 'https://gqisjvyjdbtxzbvylmwh.supabase.co';
+// Publishable (anon) key – lấy từ Project Settings → API → Project API keys → anon/public
+const SUPA_KEY = 'sb_publishable_Wr5uZh3hLVOQIPymHrOV-w_NqxfcnBs';
+const supa = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+// ── Supabase helpers ──
+// Bảng "app_data": {id: text PK, value: jsonb}
+// Bảng "users":    {id: text PK, username, name, email, password, role, approved}
+
+async function sbGet(key){ 
+  try {
+    const {data,error}=await supa.from('app_data').select('value').eq('id',key).single();
+    if(error||!data) return null;
+    return data.value;
+  } catch(e){ console.warn('sbGet error',key,e); return null; }
+}
+async function sbSet(key,value){
+  try {
+    await supa.from('app_data').upsert({id:key, value}, {onConflict:'id'});
+  } catch(e){ console.warn('sbSet error',key,e); }
+}
+
+// Load toàn bộ app state từ Supabase
+async function loadFromDB(){
+  showDBStatus('⏳ Đang kết nối...');
+  try {
+    // Test connection first
+    const {error: pingErr} = await supa.from('app_data').select('id').limit(1);
+    if(pingErr){
+      if(pingErr.code==='42P01'||pingErr.message?.includes('does not exist')){
+        showDBStatus('⚠️ Chưa tạo bảng DB');
+        console.error('❌ SUPABASE: Bảng app_data chưa tồn tại.\nChạy SQL sau trong Supabase SQL Editor:\n\ncreate table if not exists app_data (id text primary key, value jsonb);\ncreate table if not exists users (id text primary key, name text, username text, email text, password text, role text, approved boolean);\nalter table app_data disable row level security;\nalter table users disable row level security;');
+        showSetupBanner();
+        return;
+      }
+      showDBStatus('⚠️ Lỗi kết nối: '+pingErr.message);
+      console.error('Supabase error:', pingErr);
+      return;
+    }
+
+    showDBStatus('⏳ Đang tải...');
+
+    // Load users
+    const {data:usersData, error:uErr}=await supa.from('users').select('*');
+    if(!uErr && usersData && usersData.length){
+      USERS.length=0;
+      usersData.forEach(u=>USERS.push(u));
+    } else if(!uErr && (!usersData||!usersData.length)){
+      // Bảng rỗng – push admin mặc định
+      await syncUsersToDB();
+    }
+
+    // Load app data
+    const keys=['codes','tags','cg_products','grp_products','field_library','group_visibility','note_config','groups_extra'];
+    const {data:rows}=await supa.from('app_data').select('id,value').in('id',keys);
+    const byKey={};
+    (rows||[]).forEach(r=>{ byKey[r.id]=r.value; });
+
+    if(byKey.codes)        S.codes=byKey.codes;
+    if(byKey.tags)         TAGS.splice(0,TAGS.length,...byKey.tags);
+    if(byKey.cg_products)  CG_PRODUCTS.splice(0,CG_PRODUCTS.length,...byKey.cg_products);
+    if(byKey.grp_products) Object.keys(byKey.grp_products).forEach(k=>{ GRP_PRODUCTS[k]=byKey.grp_products[k]; });
+    if(byKey.field_library) FIELD_LIBRARY.splice(0,FIELD_LIBRARY.length,...byKey.field_library);
+    if(byKey.group_visibility) Object.assign(GROUP_VISIBILITY, byKey.group_visibility);
+    if(byKey.note_config)  Object.assign(NOTE_CONFIG, byKey.note_config);
+    if(byKey.groups_extra){
+      byKey.groups_extra.forEach(eg=>{
+        const g=GROUPS.find(x=>x.id===eg.id);
+        if(g) Object.assign(g,eg);
+        else if(eg.type&&eg.type!=='CG') GROUPS.push(eg);
+      });
+    }
+
+    showDBStatus('✅ Đồng bộ xong');
+    setTimeout(()=>showDBStatus(''),2000);
+  } catch(e){
+    showDBStatus('⚠️ Lỗi: '+e.message);
+    console.error('loadFromDB error:', e);
+  }
+}
+
+function showSetupBanner(){
+  // Hiện banner hướng dẫn tạo bảng ngay trên màn hình login
+  const box=document.querySelector('.login-box');
+  if(!box) return;
+  const banner=document.createElement('div');
+  banner.style.cssText='background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#78350f';
+  banner.innerHTML=`<b>⚠️ Supabase chưa có bảng dữ liệu!</b><br>
+    Vào <a href="https://supabase.com/dashboard" target="_blank" style="color:#1a6ef5">Supabase Dashboard</a>
+    → SQL Editor → chạy lệnh sau:<br>
+    <code style="display:block;background:#fff;padding:6px 8px;border-radius:4px;margin-top:6px;font-size:10.5px;white-space:pre-wrap">create table if not exists app_data (id text primary key, value jsonb);
+create table if not exists users (id text primary key, name text, username text, email text, password text, role text, approved boolean);
+alter table app_data disable row level security;
+alter table users disable row level security;</code>
+    <button onclick="this.parentElement.remove();loadFromDB()" style="margin-top:8px;background:#1a6ef5;color:#fff;border:none;border-radius:4px;padding:4px 12px;cursor:pointer;font-size:11px">🔄 Thử lại sau khi tạo bảng</button>`;
+  box.prepend(banner);
+}
+
+// Lưu toàn bộ app state lên Supabase
+async function saveToDB(key){
+  try {
+    const tasks=[];
+    if(!key||key==='codes')        tasks.push(sbSet('codes',       S.codes));
+    if(!key||key==='tags')         tasks.push(sbSet('tags',        TAGS));
+    if(!key||key==='cg_products')  tasks.push(sbSet('cg_products', CG_PRODUCTS));
+    if(!key||key==='grp_products') tasks.push(sbSet('grp_products',GRP_PRODUCTS));
+    if(!key||key==='field_library') tasks.push(sbSet('field_library',FIELD_LIBRARY));
+    if(!key||key==='group_visibility') tasks.push(sbSet('group_visibility',GROUP_VISIBILITY));
+    if(!key||key==='note_config')  tasks.push(sbSet('note_config', NOTE_CONFIG));
+    if(!key||key==='groups_extra'){
+      const extra=GROUPS.filter(g=>g.type!=='CG').map(g=>({id:g.id,name:g.name,format:g.format,example:g.example,type:g.type,fields:g.fields}));
+      tasks.push(sbSet('groups_extra', extra));
+    }
+    await Promise.all(tasks);
+    showDBStatus('💾 Đã lưu');
+    setTimeout(()=>showDBStatus(''),2000);
+  } catch(e){ console.warn('saveToDB error', key, e); showDBStatus('⚠️ Lưu thất bại'); }
+}
+
+async function syncUsersToDB(){
+  for(const u of USERS){
+    await supa.from('users').upsert(u, {onConflict:'id'});
+  }
+}
+
+function showDBStatus(msg){
+  let el=document.getElementById('db-status');
+  if(!el) return;
+  el.textContent=msg;
+  clearTimeout(el._t);
+  el._t=setTimeout(()=>{if(el.textContent===msg)el.textContent='';},3000);
+}
+</script>
+<style>
+:root{
+  --navy:#0f2240;--navy2:#163159;--blue:#1a6ef5;--bl:#e8f0fe;--bm:#bcd0fb;
+  --sur:#fff;--s2:#f6f8fc;--s3:#eef2f9;
+  --bd:#dde3ef;--bd2:#c5d0e6;
+  --tx:#111827;--t2:#374151;--t3:#6b7280;--t4:#9ca3af;
+  --grn:#0d7a45;--gl:#e6f5ee;
+  --red:#c0392b;--rl:#fdecea;
+  --r:8px;--rs:5px;
+  --sx:0 1px 3px rgba(0,0,0,.07);--sl:0 8px 28px rgba(0,0,0,.15);
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'Inter',sans-serif;background:var(--s2);color:var(--tx);font-size:13px;line-height:1.5;height:100vh;overflow:hidden;}
+.app{display:flex;height:100vh;}
+
+/* SIDEBAR */
+.sb{width:240px;min-width:240px;background:var(--navy);display:flex;flex-direction:column;overflow:hidden;}
+.sb-top{padding:13px 14px 10px;border-bottom:1px solid rgba(255,255,255,.08);}
+.sb-logo{display:flex;align-items:center;gap:8px;margin-bottom:1px;}
+.sb-ic{width:26px;height:26px;background:var(--blue);border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;}
+.sb-nm{font-size:11px;font-weight:700;color:rgba(255,255,255,.88);letter-spacing:.05em;}
+.sb-sub{font-size:10px;color:rgba(255,255,255,.32);margin-left:34px;}
+.sb-s{padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.07);}
+.sb-s input{width:100%;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.1);border-radius:4px;padding:5px 8px;font-size:11.5px;color:rgba(255,255,255,.8);font-family:inherit;outline:none;}
+.sb-s input::placeholder{color:rgba(255,255,255,.28);}
+.sb-nav{flex:1;overflow-y:auto;padding:5px;}
+.sb-nav::-webkit-scrollbar{width:3px;}
+.sb-nav::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);}
+.sb-sec{font-size:9px;font-weight:700;letter-spacing:.12em;color:rgba(255,255,255,.27);text-transform:uppercase;padding:7px 8px 3px;}
+.nv{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:4px;cursor:pointer;transition:background .1s;margin-bottom:1px;}
+.nv:hover{background:rgba(255,255,255,.07);}
+.nv.on{background:var(--blue);}
+.nv-i{font-size:12px;width:16px;text-align:center;flex-shrink:0;}
+.nv-l{font-size:11.5px;font-weight:500;color:rgba(255,255,255,.75);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.nv.on .nv-l{color:#fff;}
+.nv-b{font-size:9.5px;font-weight:600;background:rgba(255,255,255,.13);color:rgba(255,255,255,.55);padding:1px 5px;border-radius:10px;flex-shrink:0;}
+.nv.on .nv-b{background:rgba(255,255,255,.25);color:#fff;}
+.sb-ft{padding:7px 12px;border-top:1px solid rgba(255,255,255,.06);font-size:10px;color:rgba(255,255,255,.22);}
+
+/* MAIN */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden;}
+.topbar{height:50px;background:var(--sur);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 18px;gap:7px;flex-shrink:0;box-shadow:var(--sx);}
+.tb-path{display:flex;align-items:center;gap:5px;flex:1;font-size:12px;color:var(--t3);}
+.tb-b{font-size:13px;font-weight:700;color:var(--tx);}
+.tb-sep{color:var(--t4);}
+.content{flex:1;overflow-y:auto;padding:16px 18px;}
+.content::-webkit-scrollbar{width:5px;}
+.content::-webkit-scrollbar-thumb{background:#d1d9e6;border-radius:4px;}
+
+/* BUTTONS */
+.btn{display:inline-flex;align-items:center;gap:5px;padding:0 12px;height:30px;border-radius:var(--rs);font-size:12px;font-weight:600;font-family:inherit;cursor:pointer;border:none;transition:all .12s;white-space:nowrap;flex-shrink:0;}
+.btn-p{background:var(--blue);color:#fff;}.btn-p:hover{background:#1559cc;}
+.btn-n{background:var(--navy);color:#fff;}.btn-n:hover{background:var(--navy2);}
+.btn-g{background:var(--grn);color:#fff;}.btn-g:hover{background:#0a5e35;}
+.btn-o{background:transparent;color:var(--t2);border:1px solid var(--bd2);}.btn-o:hover{background:var(--s3);}
+.btn-d{background:transparent;color:var(--red);border:1px solid #f5c6c2;}.btn-d:hover{background:var(--rl);}
+.btn-sm{height:28px;padding:0 10px;font-size:11.5px;}
+.btn-xs{height:24px;padding:0 8px;font-size:11px;}
+
+/* CARDS */
+.card{background:var(--sur);border:1px solid var(--bd);border-radius:var(--r);box-shadow:var(--sx);margin-bottom:12px;}
+.card-h{padding:9px 13px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:7px;background:var(--s2);border-radius:var(--r) var(--r) 0 0;}
+.card-t{font-size:12.5px;font-weight:700;flex:1;}
+.card-b{padding:12px 14px;}
+
+/* FORMAT BAR */
+.fmt{background:var(--navy);color:rgba(255,255,255,.85);padding:8px 13px;border-radius:var(--rs);margin-bottom:8px;display:flex;align-items:center;gap:10px;cursor:pointer;transition:opacity .12s;}
+.fmt:hover{opacity:.85;}
+.fmt-l{font-size:9px;font-weight:700;letter-spacing:.12em;color:rgba(255,255,255,.38);text-transform:uppercase;white-space:nowrap;}
+.fmt-v{font-family:'JetBrains Mono',monospace;font-size:11px;color:#93c5fd;flex:1;}
+.fmt-edit{font-size:10px;color:rgba(255,255,255,.4);white-space:nowrap;}
+
+/* TABLE */
+.dt{width:100%;border-collapse:collapse;font-size:12px;}
+.dt th{background:var(--s2);padding:6px 10px;text-align:left;font-size:10.5px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid var(--bd);white-space:nowrap;position:sticky;top:0;z-index:2;}
+.dt td{padding:6px 10px;border-bottom:1px solid var(--bd);vertical-align:middle;}
+.dt tr:last-child td{border-bottom:none;}
+.dt tbody tr:hover td{background:var(--s2);}
+
+/* TAGS */
+.ctag{display:inline-block;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:11px;background:var(--bl);color:#1a4fa0;padding:1px 7px;border-radius:3px;}
+.ctag.g{background:var(--s3);color:var(--t2);border:1px solid var(--bd);}
+.bdg{display:inline-block;font-size:9.5px;font-weight:600;padding:1px 6px;border-radius:10px;}
+.bdg-r{background:#fef3c7;color:#92400e;}
+.bdg-o{background:var(--gl);color:var(--grn);}
+
+/* CHIP */
+.chip-row{display:flex;flex-wrap:wrap;gap:4px;padding:5px 6px;border:1px solid var(--bd2);border-radius:var(--rs);background:var(--sur);min-height:32px;}
+.chip{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:500;padding:2px 8px;border-radius:3px;border:1px solid var(--bd2);background:var(--s2);cursor:pointer;transition:all .08s;user-select:none;}
+.chip:hover{border-color:var(--blue);color:var(--blue);}
+.chip.on{background:var(--blue);color:#fff;border-color:var(--blue);}
+
+/* ICON BTNS */
+.ib{background:none;border:none;cursor:pointer;padding:2px 5px;border-radius:3px;color:var(--t3);font-size:12px;transition:all .1s;}
+.ib:hover{background:var(--s3);color:var(--tx);}
+.ib.del:hover{background:var(--rl);color:var(--red);}
+
+/* STATS */
+.stats{display:flex;gap:10px;margin-bottom:14px;}
+.stat{flex:1;background:var(--sur);border:1px solid var(--bd);border-radius:var(--r);padding:12px 14px;}
+.stat-n{font-size:26px;font-weight:700;font-family:'JetBrains Mono',monospace;line-height:1.1;}
+.stat-l{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;margin-top:2px;}
+
+/* NOTICE */
+.notice{display:flex;gap:7px;padding:8px 11px;border-radius:var(--rs);font-size:12px;margin-bottom:10px;}
+.ni{background:var(--bl);border:1px solid var(--bm);color:#1a3c8a;}
+.nw{background:#fef3c7;border:1px solid #fde68a;color:#78350f;}
+
+/* FORMS */
+.fr{margin-bottom:10px;}
+.fl{font-size:11.5px;font-weight:600;color:var(--t2);margin-bottom:3px;}
+.req{color:var(--red);}
+.fi,.fsel,.fta{width:100%;padding:6px 9px;border:1px solid var(--bd2);border-radius:var(--rs);font-family:inherit;font-size:12.5px;background:var(--sur);color:var(--tx);outline:none;transition:border-color .12s;}
+.fi:focus,.fsel:focus,.fta:focus{border-color:var(--blue);}
+.fta{resize:vertical;}
+.fhint{font-size:10.5px;color:var(--t4);margin-top:2px;}
+.fg2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.fg3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
+
+/* MODAL */
+.mbg{display:none;position:fixed;inset:0;background:rgba(15,23,42,.42);backdrop-filter:blur(3px);z-index:900;align-items:center;justify-content:center;}
+.mbg.open{display:flex;}
+.mbox{background:var(--sur);border-radius:var(--r);width:92%;max-width:580px;max-height:92vh;display:flex;flex-direction:column;box-shadow:var(--sl);border:1px solid var(--bd);}
+.mlg{max-width:820px;}
+.mhd{padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;}
+.mttl{font-size:13px;font-weight:700;flex:1;}
+.mcl{background:none;border:none;cursor:pointer;font-size:18px;color:var(--t3);padding:2px 5px;border-radius:3px;}
+.mcl:hover{background:var(--s3);}
+.mbody{padding:14px 16px;overflow-y:auto;flex:1;}
+.mbody::-webkit-scrollbar{width:4px;}
+.mbody::-webkit-scrollbar-thumb{background:#d1d9e6;}
+.mft{padding:10px 16px;border-top:1px solid var(--bd);display:flex;justify-content:flex-end;gap:7px;}
+
+/* COMBO LAYOUT */
+.combo-wrap{display:grid;grid-template-columns:230px 1fr;gap:12px;height:calc(100vh - 86px);}
+.prod-panel{background:var(--sur);border:1px solid var(--bd);border-radius:var(--r);display:flex;flex-direction:column;overflow:hidden;}
+.prod-ph{padding:8px 11px;border-bottom:1px solid var(--bd);background:var(--s2);display:flex;align-items:center;gap:6px;flex-shrink:0;}
+.prod-ph .t{font-size:12px;font-weight:600;flex:1;}
+.prod-list{flex:1;overflow-y:auto;}
+.prod-list::-webkit-scrollbar{width:3px;}
+.prod-list::-webkit-scrollbar-thumb{background:#d1d9e6;}
+.grp-hdr{padding:5px 10px 5px 8px;font-size:9.5px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.08em;background:var(--s2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
+.grp-hdr:hover{background:var(--s3);}
+.prod-row{padding:5px 10px 5px 28px;display:flex;align-items:flex-start;gap:7px;border-bottom:1px solid var(--bd);cursor:pointer;transition:background .08s;}
+.prod-row:hover{background:var(--s3);}
+.prod-row input[type=checkbox]{margin-top:2px;cursor:pointer;accent-color:var(--blue);flex-shrink:0;}
+.prod-pf{padding:7px 10px;border-top:1px solid var(--bd);background:var(--s2);font-size:11px;color:var(--t3);flex-shrink:0;}
+.rp{overflow-y:auto;overflow-x:hidden;}
+.rp::-webkit-scrollbar{width:5px;}
+.rp::-webkit-scrollbar-thumb{background:#d1d9e6;border-radius:4px;}
+.tbl-wrap{border:1px solid var(--bd);border-radius:var(--r);overflow:hidden;}
+.tbl-sc{overflow:auto;}
+.tbl-sc::-webkit-scrollbar{width:5px;height:5px;}
+.tbl-sc::-webkit-scrollbar-thumb{background:#d1d9e6;}
+
+/* DASHBOARD */
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;}
+.dash-card{background:var(--sur);border:1px solid var(--bd);border-radius:var(--r);box-shadow:var(--sx);}
+.dash-hd{padding:9px 13px;border-bottom:1px solid var(--bd);background:var(--s2);border-radius:var(--r) var(--r) 0 0;display:flex;align-items:center;gap:7px;}
+.dash-t{font-size:12.5px;font-weight:700;flex:1;}
+.dash-body{padding:10px 12px;}
+.constraint-row{display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--bd);}
+.constraint-row:last-child{border-bottom:none;}
+.c-label{font-size:11.5px;font-weight:600;color:var(--t2);width:110px;flex-shrink:0;}
+.c-chips{display:flex;flex-wrap:wrap;gap:3px;flex:1;}
+.c-chip{font-family:'JetBrains Mono',monospace;font-size:10.5px;background:var(--bl);color:#1a4fa0;padding:1px 6px;border-radius:3px;font-weight:600;}
+.c-chip.opt{background:var(--gl);color:var(--grn);}
+
+/* TAG CARDS */
+.tag-card{background:var(--sur);border:1px solid var(--bd);border-radius:var(--r);box-shadow:var(--sx);margin-bottom:10px;overflow:hidden;}
+.tag-hd{padding:10px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--bd);}
+.tag-dot{width:12px;height:12px;border-radius:3px;flex-shrink:0;}
+.tag-nm{font-size:13px;font-weight:700;flex:1;}
+.tag-note{font-size:11.5px;color:var(--t3);flex:2;}
+.tag-body{padding:8px 0;}
+
+/* MISC */
+.fac{display:flex;align-items:center;} .f1{flex:1;} .g6{gap:6px;} .g8{gap:8px;}
+.xs{font-size:11px;} .sm{font-size:11.5px;} .muted{color:var(--t3);}
+.mono{font-family:'JetBrains Mono',monospace;} .fw6{font-weight:600;}
+.mb8{margin-bottom:8px;} .mb12{margin-bottom:12px;}
+
+/* GROUP VISIBILITY */
+.nv-hide{opacity:.35;}
+.nv-hide .nv-l{text-decoration:line-through;}
+.nv-eye{font-size:11px;cursor:pointer;opacity:0;transition:opacity .1s;padding:2px 3px;border-radius:3px;color:rgba(255,255,255,.5);}
+.nv:hover .nv-eye{opacity:1;}
+.nv-eye:hover{background:rgba(255,255,255,.15);color:#fff;}
+
+/* FIELD LIBRARY */
+.flib-row{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--bd);transition:background .08s;}
+.flib-row:hover{background:var(--s2);}
+.flib-name{font-size:12.5px;font-weight:600;flex:1;}
+.flib-vals{font-size:11px;color:var(--t3);font-family:'JetBrains Mono',monospace;}
+.prod-schema-row{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);}
+.prod-schema-row:last-child{border-bottom:none;}
+.drag-handle{cursor:grab;color:var(--t4);font-size:14px;user-select:none;}
+.drag-handle:active{cursor:grabbing;}
+.field-order-badge{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;background:var(--navy);color:#fff;border-radius:50%;font-size:10px;font-weight:700;flex-shrink:0;}
+.fschema-tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;background:var(--bl);color:#1a4fa0;border:1px solid var(--bm);}
+.fschema-tag.req{background:#fef3c7;color:#92400e;border-color:#fde68a;}
+.fschema-tag.opt{background:var(--gl);color:var(--grn);border-color:#a7f3d0;}
+
+/* NOTE BUILDER */
+.note-section{background:var(--s2);border:1px solid var(--bd);border-radius:var(--rs);padding:10px 12px;margin-bottom:8px;}
+.note-section-title{font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:7px;}
+.note-toggle-row{display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--bd);}
+.note-toggle-row:last-child{border-bottom:none;}
+.note-toggle-lbl{font-size:12px;flex:1;}
+.note-toggle-val{font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--t3);}
+.note-preview{font-family:'JetBrains Mono',monospace;font-size:11.5px;background:var(--navy);color:#93c5fd;padding:8px 12px;border-radius:var(--rs);line-height:1.6;word-break:break-all;}
+
+/* LOGIN OVERLAY */
+.login-overlay{position:fixed;inset:0;background:linear-gradient(135deg,#0f2240 0%,#163159 60%,#1a4fa0 100%);display:flex;align-items:center;justify-content:center;z-index:9999;}
+.login-box{background:#fff;border-radius:12px;padding:36px 40px;width:380px;box-shadow:0 20px 60px rgba(0,0,0,.35);}
+.login-logo{display:flex;align-items:center;gap:10px;margin-bottom:24px;}
+.login-logo-ic{width:36px;height:36px;background:var(--blue);border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#fff;}
+.login-logo-nm{font-size:15px;font-weight:700;color:var(--navy);}
+.login-logo-sub{font-size:11px;color:var(--t3);}
+.login-title{font-size:20px;font-weight:700;color:var(--navy);margin-bottom:4px;}
+.login-sub{font-size:12.5px;color:var(--t3);margin-bottom:22px;}
+.login-tab{display:flex;gap:0;margin-bottom:20px;border:1px solid var(--bd);border-radius:var(--rs);overflow:hidden;}
+.login-tab-btn{flex:1;padding:7px;font-size:12px;font-weight:600;border:none;background:transparent;cursor:pointer;color:var(--t3);font-family:inherit;transition:all .15s;}
+.login-tab-btn.on{background:var(--navy);color:#fff;}
+.role-badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;}
+.role-admin{background:#fef3c7;color:#92400e;}
+.role-1{background:var(--bl);color:#1a4fa0;}
+.role-2{background:var(--gl);color:var(--grn);}
+.user-row{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--bd);transition:background .08s;}
+.user-row:hover{background:var(--s2);}
+.user-row:last-child{border-bottom:none;}
+.sb-user{padding:8px 12px;border-top:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:7px;}
+.sb-user-nm{font-size:11px;font-weight:600;color:rgba(255,255,255,.85);flex:1;}
+.sb-user-role{font-size:9px;padding:1px 6px;border-radius:8px;font-weight:700;}
+
+/* GUIDE FLOW */
+.guide-flow{display:flex;align-items:flex-start;gap:0;overflow-x:auto;padding:16px 0 8px;margin-bottom:16px;}
+.flow-step{flex-shrink:0;width:180px;cursor:pointer;}
+.flow-node{border:2px solid var(--bd);border-radius:10px;padding:12px 14px;background:#fff;transition:all .15s;position:relative;}
+.flow-node:hover{border-color:var(--blue);box-shadow:0 4px 12px rgba(26,110,245,.15);}
+.flow-node.active{border-color:var(--blue);background:var(--bl);}
+.flow-node-icon{font-size:22px;margin-bottom:6px;}
+.flow-node-title{font-size:12px;font-weight:700;color:var(--navy);}
+.flow-node-sub{font-size:10.5px;color:var(--t3);margin-top:2px;}
+.flow-arrow{display:flex;align-items:center;padding:0 6px;color:var(--t4);font-size:18px;flex-shrink:0;padding-top:28px;}
+.flow-detail{background:#fff;border:1px solid var(--bm);border-radius:var(--r);padding:16px 18px;margin-bottom:16px;animation:fadeIn .2s;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+.flow-detail-title{font-size:13.5px;font-weight:700;color:var(--navy);margin-bottom:10px;display:flex;align-items:center;gap:8px;}
+.guide-step-list{counter-reset:step;}
+.guide-step-list li{counter-increment:step;display:flex;gap:10px;margin-bottom:8px;font-size:12.5px;}
+.guide-step-list li::before{content:counter(step);min-width:22px;height:22px;background:var(--navy);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;margin-top:1px;}
+
+</style>
+</head>
+<body>
+<!-- LOGIN OVERLAY -->
+<div class="login-overlay" id="loginOverlay">
+  <div class="login-box">
+    <div class="login-logo">
+      <div class="login-logo-ic">NS</div>
+      <div><div class="login-logo-nm">NSCA / STARDUCT</div><div class="login-logo-sub">Product Code Manager 2026 V15</div></div>
+    </div>
+    <div class="login-tab">
+      <button class="login-tab-btn on"  id="ltab-login"    onclick="switchLoginTab('login',this)">Đăng nhập</button>
+      <button class="login-tab-btn"     id="ltab-register" onclick="switchLoginTab('register',this)">Đăng ký</button>
+      <button class="login-tab-btn"     id="ltab-forgot"   onclick="switchLoginTab('forgot',this)">Quên mật khẩu</button>
+    </div>
+
+    <!-- ── Login form ── -->
+    <div id="tab-login">
+      <div class="fr"><div class="fl">Tài khoản</div>
+        <input class="fi mono" id="login-user" placeholder="Nhập tên tài khoản..." oninput="this.value=this.value.toLowerCase().replace(/\s/g,'')" onkeydown="if(event.key==='Enter')document.getElementById('login-pw').focus()">
+      </div>
+      <div class="fr"><div class="fl">Mật khẩu</div>
+        <div style="position:relative">
+          <input class="fi" type="password" id="login-pw" placeholder="Nhập mật khẩu..." style="padding-right:36px" onkeydown="if(event.key==='Enter')doLogin()">
+          <span onclick="togglePw('login-pw')" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--t4);font-size:14px">👁</span>
+        </div>
+      </div>
+      <div id="login-err" style="color:var(--red);font-size:12px;margin-bottom:8px;display:none"></div>
+      <button class="btn btn-p" style="width:100%;height:38px;font-size:13px;margin-top:4px" onclick="doLogin()">Đăng nhập →</button>
+    </div>
+
+    <!-- ── Register form ── -->
+    <div id="tab-register" style="display:none">
+      <div class="notice nw mb8" style="font-size:12px">📋 Đăng ký xong cần Admin duyệt và cấp quyền mới đăng nhập được.</div>
+      <div class="fr"><div class="fl">Họ tên <span class="req">*</span></div><input class="fi" id="reg-name" placeholder="Nguyễn Văn A"></div>
+      <div class="fr"><div class="fl">Tài khoản <span class="req">*</span></div><input class="fi mono" id="reg-user" placeholder="nguyenvana" oninput="this.value=this.value.toLowerCase().replace(/\s/g,'')"></div>
+      <div class="fr"><div class="fl">Email <span class="req">*</span></div><input class="fi" type="email" id="reg-email" placeholder="email@congty.com"></div>
+      <div class="fr"><div class="fl">Mật khẩu <span class="req">*</span></div>
+        <div style="position:relative">
+          <input class="fi" type="password" id="reg-pw" placeholder="Tối thiểu 6 ký tự" style="padding-right:36px">
+          <span onclick="togglePw('reg-pw')" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--t4);font-size:14px">👁</span>
+        </div>
+      </div>
+      <div id="reg-err" style="color:var(--red);font-size:12px;margin-bottom:8px;display:none"></div>
+      <button class="btn btn-p" style="width:100%;height:38px;font-size:13px;margin-top:4px" onclick="doRegister()">Đăng ký →</button>
+    </div>
+
+    <!-- ── Forgot password form ── -->
+    <div id="tab-forgot" style="display:none">
+      <div class="notice ni mb12" style="font-size:12px">
+        🔑 Nhập email đã đăng ký. Hệ thống sẽ gửi mật khẩu mới về email của bạn.
+      </div>
+      <div class="fr"><div class="fl">Email đã đăng ký <span class="req">*</span></div>
+        <input class="fi" type="email" id="forgot-email" placeholder="email@congty.com" onkeydown="if(event.key==='Enter')doForgotPassword()">
+      </div>
+      <div id="forgot-err"  style="color:var(--red);font-size:12px;margin-bottom:6px;display:none"></div>
+      <div id="forgot-ok"   style="color:var(--grn);font-size:12px;margin-bottom:6px;display:none"></div>
+      <button class="btn btn-p" style="width:100%;height:38px;font-size:13px;margin-top:4px" id="forgot-btn" onclick="doForgotPassword()">Gửi mật khẩu mới →</button>
+      <div style="text-align:center;margin-top:12px">
+        <span style="font-size:11.5px;color:var(--blue);cursor:pointer;text-decoration:underline" onclick="switchLoginTab('login',document.getElementById('ltab-login'))">← Quay lại đăng nhập</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="app" id="mainApp" style="display:none">
+
+<!-- SIDEBAR -->
+<aside class="sb">
+  <div class="sb-top">
+    <div class="sb-logo"><div class="sb-ic">NS</div><div class="sb-nm">NSCA / STARDUCT</div></div>
+    <div class="sb-sub">Product Code Manager 2026 V15</div>
+  </div>
+  <div class="sb-s"><input id="sbQ" placeholder="🔍 Tìm nhóm mã..." oninput="filterSb(this.value)"></div>
+  <nav class="sb-nav" id="sbNav"></nav>
+  <div style="padding:4px 12px;font-size:10px;color:rgba(255,255,255,.35);min-height:18px" id="db-status"></div>
+  <div class="sb-user" id="sbUser"></div>
+</aside>
+
+<!-- MAIN -->
+<div class="main">
+  <div class="topbar">
+    <div class="tb-path f1 fac g6" id="tbPath"></div>
+    <button class="btn btn-o btn-sm" onclick="go('guide')">📖 Hướng dẫn</button>
+    <button class="btn btn-o btn-sm auth-admin auth-lvl1" onclick="OM('m-addgrp')">＋ Nhóm mới</button>
+    <button class="btn btn-o btn-sm" onclick="go('fieldlib')" title="Thư viện trường toàn cục">📚 Thư viện trường</button>
+    <button class="btn btn-p btn-sm" onclick="go('combo')">⚡ Tạo tổ hợp mã</button>
+    <button class="btn btn-g btn-sm" onclick="exportAll()">↓ Xuất Excel</button>
+  </div>
+  <div class="content" id="MC"></div>
+</div>
+</div>  <!-- end mainApp -->
+
+<!-- ===== MODALS ===== -->
+<div class="mbg" id="m-addgrp">
+  <div class="mbox">
+    <div class="mhd"><span class="mttl">Thêm nhóm mã mới</span><button class="mcl" onclick="CM('m-addgrp')">×</button></div>
+    <div class="mbody">
+      <div class="fg2">
+        <div class="fr"><div class="fl">Tên nhóm <span class="req">*</span></div><input class="fi" id="ag-nm" placeholder="VD: Cửa gió"></div>
+        <div class="fr"><div class="fl">ID <span class="req">*</span></div><input class="fi mono" id="ag-id" placeholder="VD: CG" style="text-transform:uppercase"></div>
+      </div>
+      <div class="fr"><div class="fl">Format mã</div><input class="fi" id="ag-fmt" placeholder="[TÊN] / [LOẠI] / ..."></div>
+      <div class="fr"><div class="fl">Ví dụ</div><input class="fi mono" id="ag-ex" placeholder="SAG/F/1/1/2520"></div>
+    </div>
+    <div class="mft"><button class="btn btn-o" onclick="CM('m-addgrp')">Huỷ</button><button class="btn btn-p" onclick="doAddGrp()">Tạo nhóm</button></div>
+  </div>
+</div>
+
+<div class="mbg" id="m-addfld">
+  <div class="mbox" style="max-width:660px">
+    <div class="mhd"><span class="mttl" id="addfld-t">Thêm trường</span><button class="mcl" onclick="CM('m-addfld')">×</button></div>
+    <div class="mbody">
+      <div class="fg2">
+        <div class="fr"><div class="fl">Tên trường <span class="req">*</span></div><input class="fi" id="af-nm" placeholder="VD: Loại cửa"></div>
+        <div class="fr"><div class="fl">Loại</div><select class="fsel" id="af-tp"><option value="required">Bắt buộc</option><option value="optional">Tuỳ chọn</option></select></div>
+      </div>
+      <div class="fr"><div class="fl">Giá trị (mỗi dòng: CODE = Mô tả)</div>
+        <textarea class="fta fi" id="af-vals" rows="7" placeholder="F = Cố định (Fixed)&#10;O = Tháo lắp (Openable)"></textarea>
+        <div class="fhint">Định dạng: CODE = Mô tả. Mỗi dòng 1 giá trị.</div>
+      </div>
+    </div>
+    <div class="mft"><button class="btn btn-o" onclick="CM('m-addfld')">Huỷ</button><button class="btn btn-p" onclick="doAddFld()">Thêm</button></div>
+  </div>
+</div>
+
+<div class="mbg" id="m-ev">
+  <div class="mbox" style="max-width:420px">
+    <div class="mhd"><span class="mttl">Sửa giá trị</span><button class="mcl" onclick="CM('m-ev')">×</button></div>
+    <div class="mbody">
+      <div class="fr"><div class="fl">Mã ký hiệu</div><input class="fi mono" id="ev-c"></div>
+      <div class="fr"><div class="fl">Ý nghĩa / Mô tả</div><input class="fi" id="ev-d"></div>
+      <div class="fr"><div class="fl">Ghi chú</div><input class="fi" id="ev-n"></div>
+    </div>
+    <div class="mft"><button class="btn btn-o" onclick="CM('m-ev')">Huỷ</button><button class="btn btn-p" onclick="doSaveVal()">Lưu</button></div>
+  </div>
+</div>
+
+<div class="mbg" id="m-av">
+  <div class="mbox" style="max-width:420px">
+    <div class="mhd"><span class="mttl">Thêm giá trị</span><button class="mcl" onclick="CM('m-av')">×</button></div>
+    <div class="mbody">
+      <div class="fr"><div class="fl">Mã ký hiệu <span class="req">*</span></div><input class="fi mono" id="av-c"></div>
+      <div class="fr"><div class="fl">Ý nghĩa / Mô tả</div><input class="fi" id="av-d"></div>
+      <div class="fr"><div class="fl">Ghi chú</div><input class="fi" id="av-n"></div>
+    </div>
+    <div class="mft"><button class="btn btn-o" onclick="CM('m-av')">Huỷ</button><button class="btn btn-p" onclick="doAddVal()">Thêm</button></div>
+  </div>
+</div>
+
+<!-- Modal: Tag create/edit -->
+<div class="mbg" id="m-tag">
+  <div class="mbox" style="max-width:460px">
+    <div class="mhd"><span class="mttl" id="tag-ttl">Tạo Tag mới</span><button class="mcl" onclick="CM('m-tag')">×</button></div>
+    <div class="mbody">
+      <input type="hidden" id="tag-id">
+      <div class="fr"><div class="fl">Tên ghi chú / Tag <span class="req">*</span></div><input class="fi" id="tag-nm" placeholder="VD: Dự án A, Kho hàng Q1, Tiêu chuẩn xuất khẩu..."></div>
+      <div class="fr"><div class="fl">Nội dung ghi chú (copy-paste từ tài liệu)</div>
+        <textarea class="fta fi" id="tag-note" rows="5" placeholder="Nhập nội dung ghi chú, yêu cầu kỹ thuật, tiêu chuẩn áp dụng...&#10;&#10;VD: Theo TCVN 5687:2010, yêu cầu độ bền ăn mòn Z275..."></textarea>
+      </div>
+      <div class="fr">
+        <div class="fl">Màu nhãn</div>
+        <div class="fac g6" style="flex-wrap:wrap;margin-top:4px">
+          <input type="color" id="tag-clr" value="#1a6ef5" style="width:34px;height:28px;border:1px solid var(--bd2);border-radius:4px;cursor:pointer;padding:2px">
+          <div class="fac" style="gap:5px;flex-wrap:wrap">
+            ${['#1a6ef5','#0d7a45','#c05621','#7c3aed','#0891b2','#be185d','#374151','#dc2626','#d97706','#059669'].map(c=>`<span onclick="document.getElementById('tag-clr').value='${c}'" style="width:20px;height:20px;border-radius:3px;background:${c};cursor:pointer;border:2px solid transparent;transition:transform .1s" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform=''"></span>`).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mft"><button class="btn btn-o" onclick="CM('m-tag')">Huỷ</button><button class="btn btn-p" onclick="doSaveTag()">Lưu Tag</button></div>
+  </div>
+</div>
+
+<!-- Modal: Assign codes to tag -->
+<div class="mbg" id="m-assign">
+  <div class="mbox mlg">
+    <div class="mhd">
+      <span class="mttl" id="assign-t">Gán mã vào Tag</span>
+      <button class="mcl" onclick="CM('m-assign')">×</button>
+    </div>
+    <div class="mbody">
+      <div class="notice ni mb8">💡 Chọn <b>nhóm sản phẩm</b> để gán hàng loạt. Mỗi mã chi tiết sẽ tự động nhận ghi chú tổng + ghi chú đặc trưng từ các thuộc tính của mã đó.</div>
+      <div class="fac g6 mb8">
+        <input class="fi" id="asn-q" placeholder="🔍 Tìm mã..." oninput="filterAsn(this.value)" style="height:28px;font-size:12px;max-width:220px">
+        <button class="btn btn-o btn-xs" onclick="asnAll(true)">☑ Tất cả</button>
+        <button class="btn btn-o btn-xs" onclick="asnAll(false)">☐ Bỏ</button>
+        <span class="xs muted">Đã chọn: <b id="asn-cnt">0</b></span>
+      </div>
+      <div id="asn-body" style="max-height:50vh;overflow-y:auto;border:1px solid var(--bd);border-radius:var(--rs)"></div>
+    </div>
+    <div class="mft"><button class="btn btn-o" onclick="CM('m-assign')">Huỷ</button><button class="btn btn-p" onclick="doSaveAssign()">Lưu</button></div>
+  </div>
+</div>
+
+<!-- Modal: Format editor -->
+<div class="mbg" id="m-fmt">
+  <div class="mbox" style="max-width:560px">
+    <div class="mhd"><span class="mttl" id="fmt-ttl">Sửa format mã</span><button class="mcl" onclick="CM('m-fmt')">×</button></div>
+    <div class="mbody">
+      <input type="hidden" id="fmt-gid">
+      <div class="fr"><div class="fl">Format mã</div><input class="fi" id="fmt-val" placeholder="[TÊN CỬA] / [LOẠI CỬA] / ..."></div>
+      <div class="fr"><div class="fl">Ví dụ mã</div><input class="fi mono" id="fmt-ex"></div>
+      <div class="notice ni">ℹ️ Chỉ thay đổi hiển thị. Logic sinh mã giữ nguyên.</div>
+    </div>
+    <div class="mft"><button class="btn btn-o" onclick="CM('m-fmt')">Huỷ</button><button class="btn btn-p" onclick="doSaveFmt()">Lưu</button></div>
+  </div>
+</div>
+
+<!-- Modal: Add Field to Library -->
+<div class="mbg" id="m-addflibfld">
+  <div class="mbox" style="max-width:660px">
+    <div class="mhd"><span class="mttl" id="addflibfld-t">Thêm trường vào Thư viện</span><button class="mcl" onclick="CM('m-addflibfld')">×</button></div>
+    <div class="mbody">
+      <div class="fg2">
+        <div class="fr"><div class="fl">Tên trường <span class="req">*</span></div><input class="fi" id="flib-nm" placeholder="VD: Loại cửa"></div>
+        <div class="fr"><div class="fl">ID trường (tự động nếu bỏ trống)</div><input class="fi mono" id="flib-id" placeholder="VD: loai_cua"></div>
+      </div>
+      <div class="fr"><div class="fl">Mô tả trường</div><input class="fi" id="flib-desc" placeholder="VD: Kiểu mở cửa, loại vận hành"></div>
+      <div class="fr">
+        <div class="fl">Giá trị mặc định (mỗi dòng: CODE = Mô tả | Ghi chú)</div>
+        <textarea class="fta fi" id="flib-vals" rows="8" placeholder="F = Cố định (Fixed) | Gắn cố định&#10;O = Tháo lắp (Openable) | Có thể mở&#10;X = Cong trục X&#10;Y = Cong trục Y"></textarea>
+        <div class="fhint">Định dạng: CODE = Mô tả | Ghi chú (ghi chú là tuỳ chọn)</div>
+      </div>
+    </div>
+    <div class="mft">
+      <input type="hidden" id="flib-edit-id">
+      <button class="btn btn-o" onclick="CM('m-addflibfld')">Huỷ</button>
+      <button class="btn btn-p" onclick="doSaveFlibFld()">Lưu vào thư viện</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Configure product fields (schema builder) -->
+<div class="mbg" id="m-prodschema">
+  <div class="mbox mlg" style="max-width:900px">
+    <div class="mhd">
+      <span class="mttl" id="prodschema-t">Cấu hình trường sản phẩm</span>
+      <button class="mcl" onclick="CM('m-prodschema')">×</button>
+    </div>
+    <div class="mbody" id="prodschema-body" style="max-height:75vh;overflow-y:auto"></div>
+    <div class="mft">
+      <span class="xs muted f1">Kéo thả để sắp xếp thứ tự. Trường đầu tiên = tên sản phẩm trong mã.</span>
+      <button class="btn btn-o" onclick="CM('m-prodschema')">Huỷ</button>
+      <button class="btn btn-p" onclick="doSaveProdSchema()">💾 Lưu cấu hình</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Note Builder for Tags -->
+<div class="mbg" id="m-notebuilder">
+  <div class="mbox mlg" style="max-width:780px">
+    <div class="mhd">
+      <span class="mttl" id="notebuilder-t">Cấu hình ghi chú tổng</span>
+      <button class="mcl" onclick="CM('m-notebuilder')">×</button>
+    </div>
+    <div class="mbody" id="notebuilder-body" style="max-height:75vh;overflow-y:auto"></div>
+    <div class="mft">
+      <button class="btn btn-o" onclick="CM('m-notebuilder')">Đóng</button>
+      <button class="btn btn-p" onclick="doSaveNoteBuilder()">💾 Lưu cấu hình ghi chú</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Manage Groups (add/remove/rename) -->
+<div class="mbg" id="m-managegroups">
+  <div class="mbox" style="max-width:700px">
+    <div class="mhd"><span class="mttl">⚙ Quản lý nhóm mã sản phẩm</span><button class="mcl" onclick="CM('m-managegroups')">×</button></div>
+    <div class="mbody" id="managegroups-body" style="max-height:70vh;overflow-y:auto"></div>
+    <div class="mft">
+      <button class="btn btn-o" onclick="CM('m-managegroups')">Đóng</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Edit product (code + desc) in any group -->
+<div class="mbg" id="m-editprod">
+  <div class="mbox" style="max-width:480px">
+    <div class="mhd"><span class="mttl" id="editprod-t">Sửa sản phẩm</span><button class="mcl" onclick="CM('m-editprod')">×</button></div>
+    <div class="mbody">
+      <div class="fr"><div class="fl">Mã sản phẩm <span class="req">*</span></div><input class="fi mono" id="ep-code" placeholder="VD: SAG, VCD-H, PKM"></div>
+      <div class="fr"><div class="fl">Tên / mô tả</div><input class="fi" id="ep-desc" placeholder="VD: Phụ kiện máng cáp"></div>
+    </div>
+    <div class="mft">
+      <input type="hidden" id="ep-gid"><input type="hidden" id="ep-idx">
+      <button class="btn btn-o" onclick="CM('m-editprod')">Huỷ</button>
+      <button class="btn btn-p" onclick="doSaveProd()">💾 Lưu</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Change Password -->
+<div class="mbg" id="m-changepw">
+  <div class="mbox" style="max-width:420px">
+    <div class="mhd"><span class="mttl">🔑 Đổi mật khẩu</span><button class="mcl" onclick="CM('m-changepw')">×</button></div>
+    <div class="mbody">
+      <div class="notice ni mb12" style="font-size:12px">Mật khẩu mới sẽ được gửi xác nhận về email của bạn.</div>
+      <div class="fr"><div class="fl">Mật khẩu hiện tại <span class="req">*</span></div>
+        <div style="position:relative">
+          <input class="fi" type="password" id="cpw-old" placeholder="Nhập mật khẩu hiện tại" style="padding-right:36px">
+          <span onclick="togglePw('cpw-old')" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--t4);font-size:14px">👁</span>
+        </div>
+      </div>
+      <div class="fr"><div class="fl">Mật khẩu mới <span class="req">*</span></div>
+        <div style="position:relative">
+          <input class="fi" type="password" id="cpw-new" placeholder="Tối thiểu 6 ký tự" style="padding-right:36px">
+          <span onclick="togglePw('cpw-new')" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--t4);font-size:14px">👁</span>
+        </div>
+      </div>
+      <div class="fr"><div class="fl">Xác nhận mật khẩu mới <span class="req">*</span></div>
+        <div style="position:relative">
+          <input class="fi" type="password" id="cpw-confirm" placeholder="Nhập lại mật khẩu mới" style="padding-right:36px">
+          <span onclick="togglePw('cpw-confirm')" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--t4);font-size:14px">👁</span>
+        </div>
+      </div>
+      <div id="cpw-err" style="color:var(--red);font-size:12px;margin-bottom:4px;display:none"></div>
+      <div id="cpw-ok"  style="color:var(--grn);font-size:12px;margin-bottom:4px;display:none"></div>
+    </div>
+    <div class="mft">
+      <button class="btn btn-o" onclick="CM('m-changepw')">Huỷ</button>
+      <button class="btn btn-p" id="cpw-btn" onclick="doChangePassword()">💾 Đổi mật khẩu</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// GLOBAL FIELD LIBRARY – Thư viện trường toàn cục
+// Mỗi field có: id, name, desc, values:[{code,desc,note}]
+// ═══════════════════════════════════════════════════════════
+let FIELD_LIBRARY = [
+  {id:'fl_loai_cua', name:'Loại cửa', desc:'Kiểu mở / vận hành cửa', values:[
+    {code:'F',desc:'Cố định (Fixed)',note:'Gắn cố định'},{code:'O',desc:'Tháo lắp (Openable)',note:'Có thể tháo'},
+    {code:'X',desc:'Cong trục X',note:''},{code:'Y',desc:'Cong trục Y',note:''},
+  ]},
+  {id:'fl_khung', name:'Loại khung', desc:'Kiểu khung viền', values:[
+    {code:'1',desc:'Khung tiêu chuẩn',note:''},{code:'2',desc:'Khung simple',note:''},
+    {code:'3',desc:'Khung không mặt',note:''},{code:'4',desc:'Frameless',note:''},
+  ]},
+  {id:'fl_nan_pos4', name:'Loại nan (pos4)', desc:'Kiểu nan cửa gió', values:[
+    {code:'1',desc:'Nan bầu dục',note:''},{code:'2',desc:'Nan giọt nước',note:''},
+    {code:'3',desc:'Nan liên động',note:''},{code:'4',desc:'Nan T',note:''},
+    {code:'5',desc:'Nan Z nhỏ',note:''},{code:'6',desc:'Nan Z lớn',note:''},
+    {code:'7',desc:'Nan Z thoáng',note:''},{code:'8',desc:'Nan Z WWL',note:''},
+    {code:'9',desc:'Nan RAG nhỏ',note:''},{code:'10',desc:'Nan RAG to',note:''},
+    {code:'11',desc:'Nan gông 38-SLD',note:''},{code:'12',desc:'Nan gông 50-SLD',note:''},
+    {code:'13',desc:'Nan sọt trứng 90°',note:''},{code:'14',desc:'Nan sọt trứng 45°',note:''},
+  ]},
+  {id:'fl_mat_vien', name:'Mặt viền (pos5a)', desc:'Kích thước mặt viền mm', values:[
+    {code:'0',desc:'Không mặt',note:''},{code:'5',desc:'Mặt 5mm',note:''},
+    {code:'15',desc:'Mặt 15mm',note:''},{code:'18',desc:'Mặt 18mm',note:''},
+    {code:'20',desc:'Mặt 20mm',note:''},{code:'25',desc:'Mặt 25mm',note:''},
+    {code:'30',desc:'Mặt 30mm',note:''},
+  ]},
+  {id:'fl_kc_nan', name:'KC nan (pos5b)', desc:'Khoảng cách nan mm', values:[
+    {code:'12',desc:'KC12mm',note:''},{code:'16',desc:'KC16mm',note:''},
+    {code:'17',desc:'KC17mm',note:''},{code:'19',desc:'KC19mm',note:''},
+    {code:'20',desc:'KC20mm',note:''},{code:'38',desc:'KC38mm',note:''},
+    {code:'45',desc:'KC45mm',note:''},{code:'50',desc:'KC50mm',note:''},
+    {code:'90',desc:'KC90mm',note:''},
+  ]},
+  {id:'fl_vat_lieu', name:'Vật liệu', desc:'Loại vật liệu / lớp mạ', values:[
+    {code:'',desc:'Nhôm (mặc định)',note:''},{code:'GI',desc:'Thép GI',note:''},
+    {code:'SUS',desc:'Inox SUS304',note:''},{code:'Z18',desc:'Tôn mạ kẽm Z18',note:''},
+    {code:'ZAM',desc:'Tôn ZAM',note:''},{code:'SS304',desc:'Inox 304',note:''},
+  ]},
+  {id:'fl_option_cg', name:'Option (cửa gió)', desc:'Phụ kiện đi kèm cửa gió', values:[
+    {code:'+O',desc:'Kèm OBD',note:''},{code:'+F',desc:'Kèm LLB lọc bụi',note:''},
+    {code:'+O+F',desc:'Kèm OBD+LLB',note:''},{code:'/H',desc:'Kèm hộp gió (Plenum)',note:''},
+    {code:'M1',desc:'Lưới chắn côn trùng nhôm',note:''},
+    {code:'SS5',desc:'Lưới inox 5×5mm',note:''},{code:'SS10',desc:'Lưới inox 10×10mm',note:''},
+  ]},
+  {id:'fl_do_day', name:'Độ dày tôn (mm)', desc:'Độ dày vật liệu tấm tôn', values:[
+    {code:'0.75',desc:'',note:''},{code:'0.8',desc:'',note:''},
+    {code:'0.95',desc:'',note:''},{code:'1',desc:'',note:''},
+    {code:'1.15',desc:'',note:''},{code:'1.2',desc:'',note:''},
+    {code:'1.5',desc:'',note:''},{code:'2',desc:'',note:''},
+  ]},
+  {id:'fl_loai_canh', name:'Loại cánh van', desc:'Kiểu cánh van gió', values:[
+    {code:'1',desc:'Song song (Parallel blade)',note:''},{code:'2',desc:'Đối ngẫu (Opposed blade)',note:''},
+  ]},
+];
+
+// GROUP_VISIBILITY: gid → {hidden: bool, order: number}
+let GROUP_VISIBILITY = {};
+
+// NOTE_CONFIG: tagId → {useTagNote: bool, fieldIncludes: {colName: bool}, prefix: '', suffix: ''}
+let NOTE_CONFIG = {};
+
+// Format: TÊN/[VL/]LOAI_CUA/KHUNG/NAN/MAT+KC[+OPTION]
+// Ví dụ: SAG/F/1/1/2520  |  SAD/GI/F/1/2/2519
+// ═══════════════════════════════════════════════════════════
+const CG_DESC = {
+  loai_cua:{F:'Cố định (Fixed)',O:'Tháo lắp (Openable)',X:'Cong trục X',Y:'Cong trục Y'},
+  khung:{'1':'Khung tiêu chuẩn','2':'Khung simple','3':'Khung không mặt','4':'Frameless'},
+  nan:{'1':'Nan bầu dục','2':'Nan giọt nước','3':'Nan liên động','4':'Nan T','5':'Nan Z nhỏ','6':'Nan Z lớn','7':'Nan Z thoáng','8':'Nan Z WWL','9':'Nan RAG nhỏ','10':'Nan RAG to','11':'Nan gông 38-SLD','12':'Nan gông 50-SLD','13':'Nan sọt trứng 90°','14':'Nan sọt trứng 45°'},
+  mat:{'0':'Không mặt','5':'Mặt 5mm','15':'Mặt 15mm','18':'Mặt 18mm','20':'Mặt 20mm','25':'Mặt 25mm','30':'Mặt 30mm'},
+  kc:{'12':'KC12mm','16':'KC16mm','17':'KC17mm','19':'KC19mm','20':'KC20mm','38':'KC38mm','45':'KC45mm','50':'KC50mm','90':'KC90mm'},
+  vat_lieu:{'':'Nhôm','GI':'Thép GI','SUS':'Inox SUS'},
+  option:{'+O':'Kèm OBD','+F':'Kèm LLB lọc bụi','+O+F':'Kèm OBD+LLB','/H':'Kèm hộp gió (Plenum)','M1':'Lưới chắn côn trùng nhôm','SS5':'Lưới inox 5×5mm','SS10':'Lưới inox 10×10mm'}
+};
+
+// CG Products – mỗi sản phẩm có ràng buộc riêng
+// nan_kc_fixed: nếu true → mỗi giá trị nan ghép cố định với kc tương ứng (không combo)
+let CG_PRODUCTS = [
+  {code:'SAG',   desc:'Cửa gió nan bầu dục 1 lớp – tiêu chuẩn',
+   loai_cua:['F','O'], khung:['1'], nan:['1','2'], mat:['5','15','25'], kc:['12','16','17','20'],
+   vat_lieu:[''], option:['+O','+F','+O+F','/H'], nan_kc_fixed:false},
+
+  {code:'SAG-S', desc:'Cửa gió nan giọt nước 1 lớp – simple (khung đơn)',
+   loai_cua:['F','O'], khung:['2'], nan:['1','2'], mat:['5','15','25'], kc:['12','16','17','20'],
+   vat_lieu:[''], option:['+O','+F','+O+F','/H'], nan_kc_fixed:false},
+
+  {code:'SAG-X', desc:'Cửa gió nan bầu dục 1 lớp – liên động',
+   loai_cua:['F'], khung:['1'], nan:['3'], mat:['20'], kc:['20'],
+   vat_lieu:[''], option:['+O','+F','+O+F','/H'], nan_kc_fixed:false},
+
+  {code:'DAG',   desc:'Cửa gió nan bầu dục 2 lớp – tiêu chuẩn',
+   loai_cua:['F','O'], khung:['1'], nan:['1','2'], mat:['5','15','25'], kc:['12','16','20'],
+   vat_lieu:[''], option:['+O','+F','+O+F','/H'], nan_kc_fixed:false},
+
+  {code:'DAG-S', desc:'Cửa gió nan bầu dục 2 lớp – simple',
+   loai_cua:['F','O'], khung:['2'], nan:['1','2'], mat:['5','15','25'], kc:['12','16','20'],
+   vat_lieu:[''], option:['+O','+F','+O+F','/H'], nan_kc_fixed:false},
+
+  {code:'DAG-X', desc:'Cửa gió nan bầu dục 2 lớp – nan xoay',
+   loai_cua:['F'], khung:['1'], nan:['3'], mat:['20'], kc:['20'],
+   vat_lieu:[''], option:['+O','+F','+O+F','/H'], nan_kc_fixed:false},
+
+  {code:'SCLB',  desc:'Cửa gió nan T – tiêu chuẩn',
+   loai_cua:['F','O','X','Y'], khung:['1','3','4'], nan:['4'], mat:['0','5','15','25'], kc:['12','16','20'],
+   vat_lieu:[''], option:['+O','+F','+O+F','/H'], nan_kc_fixed:false},
+
+  {code:'SCLB-S',desc:'Cửa gió nan T – simple',
+   loai_cua:['F','O'], khung:['2','3','4'], nan:['4'], mat:['0','5','15','25'], kc:['12','16','20'],
+   vat_lieu:[''], option:['+O','+F','+O+F','/H'], nan_kc_fixed:false},
+
+  // SLD: nan cố định ghép với KC tương ứng (nan11↔kc38, nan12↔kc50)
+  {code:'SLD',   desc:'Cửa gió khe hẹp',
+   loai_cua:['F'], khung:['1'], nan:['11','12'], mat:['18','25'],
+   kc:['38','50'], // kc[i] tương ứng nan[i]
+   vat_lieu:[''], option:['+F','/H'], nan_kc_fixed:true},
+
+  {code:'SWL',   desc:'Cửa gió louver nan Z trung',
+   loai_cua:['F'], khung:['1'], nan:['5','6','7'], mat:['30'], kc:['50'],
+   vat_lieu:[''], option:['M1','SS5','SS10'], nan_kc_fixed:false},
+
+  {code:'WWL',   desc:'Louver tấm lớn (Weatherproof Louver)',
+   loai_cua:['F'], khung:['1'], nan:['8'], mat:['30'], kc:['90'],
+   vat_lieu:[''], option:['M1','SS5','SS10'], nan_kc_fixed:false},
+
+  {code:'SECG',  desc:'Cửa sọt trứng nan thẳng 90° (Egg Crate)',
+   loai_cua:['F','O'], khung:['1'], nan:['13'], mat:['25'], kc:['12'],
+   vat_lieu:[''], option:['+F','/H'], nan_kc_fixed:false},
+
+  {code:'SECG-45',desc:'Cửa sọt trứng nan nghiêng 45°',
+   loai_cua:['F','O'], khung:['1'], nan:['14'], mat:['25'], kc:['12'],
+   vat_lieu:[''], option:['+F','/H'], nan_kc_fixed:false},
+
+  {code:'AAG',   desc:'Miệng gió hoa văn',
+   loai_cua:['F'], khung:['1'], nan:['1'], mat:['25'], kc:['12'],
+   vat_lieu:['','GI','SUS'], option:[], nan_kc_fixed:false},
+
+  // SRAG: nan cố định ghép KC (nan9↔kc20, nan10↔kc45)
+  {code:'SRAG',  desc:'Cửa gió nan 45°',
+   loai_cua:['F','O'], khung:['1'], nan:['9','10'], mat:['30'],
+   kc:['20','45'],
+   vat_lieu:[''], option:['+F','/H'], nan_kc_fixed:true},
+
+  {code:'SAD',   desc:'Cửa gió Spiral duct grille',
+   loai_cua:['F'], khung:['1'], nan:['2'], mat:['25'], kc:['19'],
+   vat_lieu:['','GI'], option:['/H'], nan_kc_fixed:false},
+];
+
+// ═══════════════════════════════════════════════════════════
+// GENERIC GROUPS
+// ═══════════════════════════════════════════════════════════
+const GROUPS = [
+  {id:'CG',  name:'Cửa gió / Miệng gió',    format:'[TÊN CỬA] / [LOẠI CỬA] / [KHUNG] / [NAN] / [MẶT+KC] + [OPTION]', example:'SAG/F/1/1/2520  |  SAG/F/1/1/2520+O+F  |  SAD/GI/F/1/2/2519', type:'CG',      fields:[]},
+  {id:'VCK', name:'Van gió cơ khí',          format:'[MÃ VAN] / [ĐỘ DÀY] / [LOẠI CÁNH] / [VẬT LIỆU] -[P] -[BIC]',    example:'VCD-H/0.75/1/Z18  |  VCD-HS/0.95/2/SS304-P1-C  |  RVCD-H/0.75/Z18', type:'VCK',     fields:[
+    {id:'v1',name:'Mã nhóm van',type:'required',values:[
+      {code:'VCD-H', desc:'Van VCD tay gạt – vuông',note:''},{code:'VCD-T',desc:'Van VCD trục vít – vuông',note:''},
+      {code:'MD',    desc:'Van VCD motor – vuông',note:''},{code:'NRD',desc:'Van một chiều – vuông',note:''},
+      {code:'PRD',   desc:'Van xả áp – vuông',note:''},
+      {code:'RVCD-H',desc:'Van VCD tay gạt – tròn',note:'round'},{code:'RVCD-T',desc:'Van VCD trục vít – tròn',note:'round'},
+      {code:'RMD',   desc:'Van VCD motor – tròn',note:'round'},{code:'RNRD',desc:'Van một chiều – tròn',note:'round'},
+      {code:'RPRD',  desc:'Van xả áp – tròn',note:'round'},
+      {code:'VCD-HS',desc:'Van VCD kín khí cao – vuông (High Seal)',note:'highseal'},{code:'VCD-TS',desc:'Van VCD trục vít kín khí cao',note:'highseal'},
+      {code:'NRD-S', desc:'Van một chiều kín khí cao – vuông',note:'highseal'},{code:'PRD-S',desc:'Van xả áp kín khí cao – vuông',note:'highseal'},
+      {code:'RVCD-HS',desc:'Van VCD kín khí cao – tròn',note:'round,highseal'},{code:'RVCD-TS',desc:'Van VCD trục vít kín khí cao – tròn',note:'round,highseal'},
+      {code:'RNRD-S',desc:'Van một chiều kín khí cao – tròn',note:'round,highseal'},{code:'RPRD-S',desc:'Van xả áp kín khí cao – tròn',note:'round,highseal'},
+    ]},
+    {id:'v2',name:'Độ dày tôn (mm)',type:'required',values:[
+      {code:'0.75',desc:'',note:''},{code:'0.95',desc:'',note:''},{code:'1.15',desc:'',note:''},
+      {code:'1.5',desc:'',note:''},{code:'1.6',desc:'',note:''},{code:'2',desc:'',note:''},
+    ]},
+    {id:'v3',name:'Loại cánh (bỏ qua nếu tròn)',type:'required',values:[
+      {code:'1',desc:'Song song (Parallel blade)',note:''},{code:'2',desc:'Đối ngẫu (Opposed blade)',note:''},
+    ]},
+    {id:'v4',name:'Vật liệu / Lớp mạ',type:'required',values:[
+      {code:'Z18',desc:'Tôn HS mạ kẽm Z18',note:''},{code:'SS304',desc:'Inox 304',note:''},{code:'ZAM',desc:'Tôn ZAM',note:''},
+    ]},
+    {id:'v5',name:'Dải áp suất (High Seal)',type:'optional',values:[
+      {code:'P1',desc:'500–1000 Pa',note:''},{code:'P2',desc:'1000–1500 Pa',note:''},{code:'P3',desc:'1500–2500 Pa',note:''},
+    ]},
+    {id:'v6',name:'Loại BIC',type:'optional',values:[
+      {code:'TDC',desc:'BIC TDC',note:''},{code:'C',desc:'BIC loại C',note:''},{code:'V30',desc:'BIC V30',note:''},
+      {code:'V40',desc:'BIC V40',note:''},{code:'V50',desc:'BIC V50',note:''},
+    ]},
+  ]},
+  {id:'EI', name:'Van ngăn cháy EI',          format:'[MÃ VAN] / [ĐỘ DÀY] / [LOẠI CÁNH] / [VẬT LIỆU] ([Cấp EI] [L])', example:'FD/1.15/1/Z18 (E120)  |  S-MFSD/0.95/1/Z18 (EI120 L210)', type:'EI', fields:[
+    {id:'e1',name:'Mã nhóm van ngăn cháy',type:'required',values:[
+      {code:'FD',desc:'Van ngăn cháy cầu chì',note:'E120'},{code:'MFD',desc:'Van ngăn cháy motor',note:'E120'},
+      {code:'S-FSD',desc:'Van ngăn cháy cách nhiệt cầu chì 5 trong 1',note:'EI≤120'},{code:'S-FSS',desc:'Van ngăn cháy cách nhiệt cầu chì',note:'EI≤120'},
+      {code:'S-MFSD',desc:'Van ngăn cháy cách nhiệt Motor',note:'EI≤120'},{code:'S-MFSD-S1/B',desc:'Van ngăn cháy cách nhiệt Motor cao cấp',note:'EI≤180'},
+      {code:'SAFD',desc:'Van ngăn cháy Multi Blade bù áp',note:'EI≤60'},
+      {code:'S-MFSD-MB',desc:'Van ngăn cháy cách nhiệt nhiều cánh MB',note:'EI≤120'},
+      {code:'S-MFSD-M2-K',desc:'Van ngăn cháy cách nhiệt M2-K',note:'EI≤180'},
+      {code:'S-MFSD-WF',desc:'Van ngăn cháy cách nhiệt WF',note:'EI≤60'},{code:'S-MFSD-WB',desc:'Van ngăn cháy cách nhiệt WB',note:'EI≤60'},
+    ]},
+    {id:'e2',name:'Độ dày tôn (mm)',type:'required',values:[
+      {code:'0.95',desc:'',note:''},{code:'1.15',desc:'',note:''},{code:'1.5',desc:'',note:''},{code:'2',desc:'',note:''},
+    ]},
+    {id:'e3',name:'Loại cánh',type:'required',values:[
+      {code:'1',desc:'Song song (Parallel blade)',note:''},{code:'2',desc:'Đối ngẫu (Opposed blade)',note:''},
+    ]},
+    {id:'e4',name:'Vật liệu',type:'required',values:[
+      {code:'Z18',desc:'Tôn HS mạ kẽm Z18',note:''},{code:'SS304',desc:'Inox 304',note:''},
+    ]},
+    {id:'e5',name:'Cấp chống cháy EI',type:'required',values:[
+      {code:'E120',desc:'E 120 phút',note:''},{code:'EI30',desc:'30 phút',note:''},{code:'EI45',desc:'45 phút',note:''},
+      {code:'EI60',desc:'60 phút',note:''},{code:'EI90',desc:'90 phút',note:''},{code:'EI120',desc:'120 phút',note:''},
+    ]},
+    {id:'e6',name:'Chiều dài thân van',type:'optional',values:[
+      {code:'L210',desc:'L 210mm',note:''},{code:'L600',desc:'L 600mm – chỉ S-FSD, S-MFSD',note:''},
+    ]},
+  ]},
+  {id:'VAV',name:'VAV Box & CAV',             format:'[MÃ VAV]-[SIZE"] / [Sưởi] / [Tiêu âm]',                          example:'SVAV-S-4  |  S-VAV-PF-6/E1  |  S-VAV-PF-8/W/C1', type:'VAV', fields:[
+    {id:'vav1',name:'Mã nhóm VAV',type:'required',values:[
+      {code:'SVAV-S',desc:'VAV Box Single Duct',note:''},{code:'SVAV-SL',desc:'VAV Box Single Duct long body',note:''},
+      {code:'SVAV-D',desc:'VAV Box Dual Duct',note:''},{code:'S-MV',desc:'VAV compact',note:''},
+      {code:'S-VAV-R',desc:'VAV vuông',note:''},{code:'S-VAV-PF',desc:'VAV sưởi quạt song song',note:''},
+      {code:'S-VAV-SF',desc:'VAV sưởi quạt nối tiếp',note:''},{code:'SCAV',desc:'CAV tròn',note:''},{code:'SCAVR',desc:'CAV vuông',note:''},
+    ]},
+    {id:'vav2',name:'Size (đường kính inch)',type:'required',values:[
+      {code:'4',desc:'Ø4"',note:''},{code:'5',desc:'Ø5"',note:''},{code:'6',desc:'Ø6"',note:''},
+      {code:'7',desc:'Ø7"',note:''},{code:'8',desc:'Ø8"',note:''},{code:'10',desc:'Ø10"',note:''},
+      {code:'12',desc:'Ø12"',note:''},{code:'14',desc:'Ø14"',note:''},{code:'16',desc:'Ø16"',note:''},
+    ]},
+    {id:'vav3',name:'Sưởi',type:'optional',values:[
+      {code:'E1',desc:'Sưởi điện Electric Heater',note:''},{code:'E2',desc:'Sưởi điện PTC',note:''},{code:'W',desc:'Water Coil',note:''},
+    ]},
+    {id:'vav4',name:'Lớp tiêu âm',type:'optional',values:[{code:'C1',desc:'Bông thủy tinh 48kg/m³',note:''}]},
+  ]},
+  {id:'TA', name:'Tiêu âm & Louver tiêu âm', format:'[Mã][L khi Louver] / [Tiêu âm] / [BIC]',                          example:'S-RDO/C2  |  S-LVT150/C1  |  S-RDS/C2/V30', type:'TA', fields:[
+    {id:'ta1',name:'Mã nhóm tiêu âm',type:'required',values:[
+      {code:'S-RDO',desc:'Tiêu âm 4 vách ngoài',note:''},{code:'S-RDI',desc:'Tiêu âm 4 vách trong',note:''},
+      {code:'S-RDS',desc:'Tiêu âm nhiều vách song song (Splitter)',note:''},{code:'S-RC1',desc:'Tiêu âm vách tròn',note:''},
+      {code:'S-RCP',desc:'Tiêu âm tròn có POD',note:''},{code:'S-LVT',desc:'Louver tiêu âm cánh thẳng',note:'louver'},
+      {code:'S-LVO',desc:'Louver tiêu âm cánh Elip',note:'louver'},
+    ]},
+    {id:'ta2',name:'Chiều dài L (chỉ S-LVT, S-LVO)',type:'optional',values:[
+      {code:'150',desc:'L 150mm',note:''},{code:'300',desc:'L 300mm',note:''},{code:'600',desc:'L 600mm',note:''},
+    ]},
+    {id:'ta3',name:'Lớp tiêu âm',type:'required',values:[
+      {code:'C1',desc:'Bông thủy tinh 48kg/m³',note:''},{code:'C2',desc:'Bông khoáng 80kg/m³',note:''},
+    ]},
+    {id:'ta4',name:'Loại BIC (S-RDO, S-RDI, S-RDS)',type:'optional',values:[
+      {code:'TDC',desc:'BIC TDC',note:''},{code:'C',desc:'BIC loại C',note:''},{code:'V30',desc:'BIC V30',note:''},
+      {code:'V40',desc:'BIC V40',note:''},{code:'V50',desc:'BIC V50',note:''},
+    ]},
+  ]},
+  {id:'TMC',name:'Thang máng cáp điện',       format:'[MC/TC]-[W]x[H]/[VL]-[dày]  |  [PKM/PKT]-[PK]-[W]-[VL]',        example:'MC-200x50/Z18-0.75  |  TC-400x100/ZAM-1.5  |  PKM-CO01-200-Z18', type:'TMC', fields:[
+    {id:'tmc1',name:'Mã nhóm',type:'required',values:[
+      {code:'MC',desc:'Máng cáp điện (Cable Tray)',note:''},{code:'TC',desc:'Thang cáp điện (Cable Ladder)',note:''},
+      {code:'N-MC',desc:'Nắp máng cáp',note:''},{code:'PKM',desc:'Phụ kiện máng',note:'pk'},
+      {code:'PKT',desc:'Phụ kiện thang',note:'pk'},{code:'N-PKM',desc:'Nắp phụ kiện máng',note:'npk'},
+      {code:'N-PKT',desc:'Nắp phụ kiện thang',note:'npk'},
+    ]},
+    {id:'tmc2',name:'Loại phụ kiện (PKM/PKT)',type:'optional',values:[
+      {code:'CO01',desc:'Co ngang 90°',note:''},{code:'CO02',desc:'Co ngang 45°',note:''},
+      {code:'CO03',desc:'Co ngang 30°',note:''},{code:'CO04',desc:'Co ngang 15°',note:''},
+      {code:'TEE',desc:'Chữ T phân nhánh',note:''},{code:'RE',desc:'Côn thu (Reducer)',note:''},
+      {code:'J',desc:'Nối thẳng',note:''},{code:'END',desc:'Đầu bịt',note:''},
+    ]},
+    {id:'tmc3',name:'Chiều rộng W (mm)',type:'required',values:[
+      {code:'50',desc:'',note:''},{code:'100',desc:'',note:''},{code:'150',desc:'',note:''},{code:'200',desc:'',note:''},
+      {code:'300',desc:'',note:''},{code:'400',desc:'',note:''},{code:'500',desc:'',note:''},{code:'600',desc:'',note:''},
+    ]},
+    {id:'tmc4',name:'Chiều cao H (mm) – MC/TC',type:'optional',values:[
+      {code:'50',desc:'',note:''},{code:'75',desc:'',note:''},{code:'100',desc:'',note:''},{code:'150',desc:'',note:''},{code:'200',desc:'',note:''},
+    ]},
+    {id:'tmc5',name:'Vật liệu / Lớp mạ',type:'required',values:[
+      {code:'Z18',desc:'Tôn mạ kẽm Z18',note:''},{code:'ZAM',desc:'Tôn Z.A.M',note:''},
+      {code:'SS304',desc:'Inox 304',note:''},{code:'S',desc:'Sơn tĩnh điện',note:''},
+    ]},
+    {id:'tmc6',name:'Độ dày (mm)',type:'required',values:[
+      {code:'0.75',desc:'',note:''},{code:'0.8',desc:'',note:''},{code:'0.95',desc:'',note:''},
+      {code:'1',desc:'',note:''},{code:'1.15',desc:'',note:''},{code:'1.2',desc:'',note:''},
+      {code:'1.5',desc:'',note:''},{code:'2',desc:'',note:''},
+    ]},
+  ]},
+  {id:'NST',name:'Nan sọt trứng',             format:'[Loại tấm nan] - [SIZE]',                                          example:'EG90-500x500  |  EG45S-600x600', type:'generic', fields:[
+    {id:'nst1',name:'Loại tấm nan',type:'required',values:[
+      {code:'EG90',desc:'Tấm nan sọt trứng thô 90°',note:''},{code:'EG45',desc:'Tấm nan sọt trứng thô 45°',note:''},
+      {code:'EG90S',desc:'Tấm nan sọt trứng 90° sơn tĩnh điện',note:''},{code:'EG45S',desc:'Tấm nan sọt trứng 45° sơn tĩnh điện',note:''},
+    ]},
+  ]},
+];
+
+// ═══════════════════════════════════════════════════════════
+// GRP_PRODUCTS – Ràng buộc per-product cho tất cả nhóm (giống CG_PRODUCTS)
+// fieldConstraints: {fieldId: [allowedCodes]} – override giá trị cho từng field
+// Nếu không có entry cho 1 field → dùng toàn bộ values của field đó
+// ═══════════════════════════════════════════════════════════
+let GRP_PRODUCTS = {
+  // VCK – Van gió cơ khí
+  VCK: [
+    {code:'VCD-H',  desc:'Van VCD tay gạt – vuông',      fieldConstraints:{v2:['0.75','0.95','1.15'],  v3:['1','2'], v4:['Z18','ZAM'],          v5:[],       v6:['TDC','C','V30','V40','V50']}},
+    {code:'VCD-T',  desc:'Van VCD trục vít – vuông',     fieldConstraints:{v2:['0.75','0.95','1.15'],  v3:['1','2'], v4:['Z18','ZAM'],          v5:[],       v6:['TDC','C','V30','V40','V50']}},
+    {code:'MD',     desc:'Van VCD motor – vuông',         fieldConstraints:{v2:['0.75','0.95','1.15'],  v3:['1','2'], v4:['Z18','ZAM'],          v5:[],       v6:['TDC','C','V30','V40','V50']}},
+    {code:'NRD',    desc:'Van một chiều – vuông',         fieldConstraints:{v2:['0.75','0.95'],         v3:['1'],     v4:['Z18'],                v5:[],       v6:[]}},
+    {code:'PRD',    desc:'Van xả áp – vuông',             fieldConstraints:{v2:['0.75','0.95'],         v3:['1'],     v4:['Z18'],                v5:[],       v6:[]}},
+    {code:'RVCD-H', desc:'Van VCD tay gạt – tròn',       fieldConstraints:{v2:['0.75','0.95','1.15'],  v3:[],        v4:['Z18','ZAM'],          v5:[],       v6:['TDC','C','V30']}},
+    {code:'RVCD-T', desc:'Van VCD trục vít – tròn',      fieldConstraints:{v2:['0.75','0.95','1.15'],  v3:[],        v4:['Z18','ZAM'],          v5:[],       v6:['TDC','C','V30']}},
+    {code:'RMD',    desc:'Van VCD motor – tròn',          fieldConstraints:{v2:['0.75','0.95','1.15'],  v3:[],        v4:['Z18','ZAM'],          v5:[],       v6:['TDC','C','V30']}},
+    {code:'RNRD',   desc:'Van một chiều – tròn',          fieldConstraints:{v2:['0.75','0.95'],         v3:[],        v4:['Z18'],                v5:[],       v6:[]}},
+    {code:'RPRD',   desc:'Van xả áp – tròn',              fieldConstraints:{v2:['0.75','0.95'],         v3:[],        v4:['Z18'],                v5:[],       v6:[]}},
+    {code:'VCD-HS', desc:'Van VCD kín khí cao – vuông',  fieldConstraints:{v2:['0.95','1.15','1.5'],   v3:['1','2'], v4:['Z18','SS304'],        v5:['P1','P2','P3'], v6:['C','V30','V40','V50']}},
+    {code:'VCD-TS', desc:'Van VCD trục vít kín khí cao', fieldConstraints:{v2:['0.95','1.15','1.5'],   v3:['1','2'], v4:['Z18','SS304'],        v5:['P1','P2','P3'], v6:['C','V30','V40','V50']}},
+    {code:'NRD-S',  desc:'Van một chiều kín khí cao',    fieldConstraints:{v2:['0.95','1.15'],         v3:['1'],     v4:['Z18','SS304'],        v5:['P1','P2'],      v6:[]}},
+    {code:'PRD-S',  desc:'Van xả áp kín khí cao',        fieldConstraints:{v2:['0.95','1.15'],         v3:['1'],     v4:['Z18','SS304'],        v5:['P1','P2'],      v6:[]}},
+    {code:'RVCD-HS',desc:'Van VCD kín khí cao – tròn',   fieldConstraints:{v2:['0.95','1.15','1.5'],   v3:[],        v4:['Z18','SS304'],        v5:['P1','P2','P3'], v6:['C','V30']}},
+    {code:'RVCD-TS',desc:'Van VCD trục vít kín khí cao – tròn',fieldConstraints:{v2:['0.95','1.15','1.5'],v3:[], v4:['Z18','SS304'],           v5:['P1','P2','P3'], v6:['C','V30']}},
+    {code:'RNRD-S', desc:'Van một chiều kín khí cao – tròn',fieldConstraints:{v2:['0.95','1.15'],      v3:[],        v4:['Z18','SS304'],        v5:['P1','P2'],      v6:[]}},
+    {code:'RPRD-S', desc:'Van xả áp kín khí cao – tròn',fieldConstraints:{v2:['0.95','1.15'],          v3:[],        v4:['Z18','SS304'],        v5:['P1','P2'],      v6:[]}},
+  ],
+  // EI – Van ngăn cháy
+  EI: [
+    {code:'FD',          desc:'Van ngăn cháy cầu chì',                   fieldConstraints:{e2:['0.95','1.15','1.5'],e3:['1','2'],e4:['Z18'],      e5:['E120'],                              e6:[]}},
+    {code:'MFD',         desc:'Van ngăn cháy motor',                     fieldConstraints:{e2:['0.95','1.15','1.5'],e3:['1','2'],e4:['Z18'],      e5:['E120'],                              e6:[]}},
+    {code:'S-FSD',       desc:'Van ngăn cháy cách nhiệt cầu chì 5in1',   fieldConstraints:{e2:['0.95','1.15'],      e3:['1','2'],e4:['Z18'],      e5:['EI60','EI90','EI120'],               e6:['L210','L600']}},
+    {code:'S-FSS',       desc:'Van ngăn cháy cách nhiệt cầu chì',        fieldConstraints:{e2:['0.95','1.15'],      e3:['1','2'],e4:['Z18'],      e5:['EI60','EI90','EI120'],               e6:['L210']}},
+    {code:'S-MFSD',      desc:'Van ngăn cháy cách nhiệt Motor',          fieldConstraints:{e2:['0.95','1.15'],      e3:['1','2'],e4:['Z18'],      e5:['EI30','EI45','EI60','EI90','EI120'], e6:['L210','L600']}},
+    {code:'S-MFSD-S1/B', desc:'Van ngăn cháy cách nhiệt Motor cao cấp', fieldConstraints:{e2:['1.15','1.5'],       e3:['1','2'],e4:['Z18','SS304'],e5:['EI60','EI90','EI120'],              e6:['L210']}},
+    {code:'SAFD',        desc:'Van ngăn cháy Multi Blade bù áp',         fieldConstraints:{e2:['0.95','1.15'],      e3:['1','2'],e4:['Z18'],      e5:['EI30','EI45','EI60'],                e6:[]}},
+    {code:'S-MFSD-MB',   desc:'Van ngăn cháy nhiều cánh MB',             fieldConstraints:{e2:['0.95','1.15'],      e3:['1','2'],e4:['Z18'],      e5:['EI60','EI90','EI120'],               e6:['L210']}},
+    {code:'S-MFSD-M2-K', desc:'Van ngăn cháy M2-K',                     fieldConstraints:{e2:['1.15','1.5'],       e3:['1','2'],e4:['Z18','SS304'],e5:['EI90','EI120'],                    e6:[]}},
+    {code:'S-MFSD-WF',   desc:'Van ngăn cháy WF',                       fieldConstraints:{e2:['0.95','1.15'],      e3:['1','2'],e4:['Z18'],      e5:['EI30','EI45','EI60'],                e6:[]}},
+    {code:'S-MFSD-WB',   desc:'Van ngăn cháy WB',                       fieldConstraints:{e2:['0.95','1.15'],      e3:['1','2'],e4:['Z18'],      e5:['EI30','EI45','EI60'],                e6:[]}},
+  ],
+  // VAV – VAV Box & CAV
+  VAV: [
+    {code:'SVAV-S',  desc:'VAV Box Single Duct',           fieldConstraints:{vav2:['4','5','6','7','8','10','12','14','16'], vav3:[],          vav4:['C1']}},
+    {code:'SVAV-SL', desc:'VAV Box Single Duct long body', fieldConstraints:{vav2:['4','5','6','7','8','10','12'],          vav3:[],          vav4:['C1']}},
+    {code:'SVAV-D',  desc:'VAV Box Dual Duct',             fieldConstraints:{vav2:['6','8','10','12'],                      vav3:[],          vav4:['C1']}},
+    {code:'S-MV',    desc:'VAV compact',                   fieldConstraints:{vav2:['4','5','6','7','8'],                    vav3:[],          vav4:[]}},
+    {code:'S-VAV-R', desc:'VAV vuông',                     fieldConstraints:{vav2:['4','5','6','7','8','10','12'],          vav3:[],          vav4:['C1']}},
+    {code:'S-VAV-PF',desc:'VAV sưởi quạt song song',      fieldConstraints:{vav2:['4','5','6','7','8','10','12'],          vav3:['E1','E2','W'], vav4:['C1']}},
+    {code:'S-VAV-SF',desc:'VAV sưởi quạt nối tiếp',       fieldConstraints:{vav2:['4','5','6','7','8','10','12'],          vav3:['E1','E2','W'], vav4:['C1']}},
+    {code:'SCAV',    desc:'CAV tròn',                      fieldConstraints:{vav2:['4','5','6','7','8','10','12'],          vav3:[],          vav4:[]}},
+    {code:'SCAVR',   desc:'CAV vuông',                     fieldConstraints:{vav2:['4','5','6','7','8','10','12'],          vav3:[],          vav4:[]}},
+  ],
+  // TA – Tiêu âm & Louver tiêu âm
+  TA: [
+    {code:'S-RDO',desc:'Tiêu âm 4 vách ngoài',            fieldConstraints:{ta2:[],         ta3:['C1','C2'], ta4:['TDC','C','V30','V40','V50']}},
+    {code:'S-RDI',desc:'Tiêu âm 4 vách trong',            fieldConstraints:{ta2:[],         ta3:['C1','C2'], ta4:['TDC','C','V30','V40','V50']}},
+    {code:'S-RDS',desc:'Tiêu âm nhiều vách song song',    fieldConstraints:{ta2:[],         ta3:['C1','C2'], ta4:['TDC','C','V30','V40','V50']}},
+    {code:'S-RC1',desc:'Tiêu âm vách tròn',               fieldConstraints:{ta2:[],         ta3:['C1','C2'], ta4:[]}},
+    {code:'S-RCP',desc:'Tiêu âm tròn có POD',             fieldConstraints:{ta2:[],         ta3:['C1','C2'], ta4:[]}},
+    {code:'S-LVT',desc:'Louver tiêu âm cánh thẳng',      fieldConstraints:{ta2:['150','300','600'], ta3:['C1','C2'], ta4:[]}},
+    {code:'S-LVO',desc:'Louver tiêu âm cánh Elip',        fieldConstraints:{ta2:['150','300','600'], ta3:['C1','C2'], ta4:[]}},
+  ],
+  // TMC – Thang máng cáp điện
+  TMC: [
+    {code:'MC',   desc:'Máng cáp điện (Cable Tray)',      fieldConstraints:{tmc2:[], tmc3:['50','100','150','200','300','400','500','600'], tmc4:['50','75','100','150','200'], tmc5:['Z18','ZAM','SS304','S'], tmc6:['0.75','0.8','0.95','1','1.15','1.2','1.5','2']}},
+    {code:'TC',   desc:'Thang cáp điện (Cable Ladder)',   fieldConstraints:{tmc2:[], tmc3:['100','150','200','300','400','500','600'],       tmc4:['75','100','150','200'],      tmc5:['Z18','ZAM','SS304','S'], tmc6:['1','1.15','1.2','1.5','2']}},
+    {code:'N-MC', desc:'Nắp máng cáp',                   fieldConstraints:{tmc2:[], tmc3:['50','100','150','200','300','400','500','600'], tmc4:[],                             tmc5:['Z18','ZAM','SS304','S'], tmc6:['0.75','0.8','0.95','1']}},
+    {code:'PKM',  desc:'Phụ kiện máng',                  fieldConstraints:{tmc2:['CO01','CO02','CO03','CO04','TEE','RE','J','END'], tmc3:['50','100','150','200','300','400','500','600'], tmc4:[], tmc5:['Z18','ZAM','S'], tmc6:[]}},
+    {code:'PKT',  desc:'Phụ kiện thang',                 fieldConstraints:{tmc2:['CO01','CO02','CO03','TEE','RE','J','END'],       tmc3:['100','150','200','300','400','500','600'],       tmc4:[], tmc5:['Z18','ZAM','S'], tmc6:[]}},
+    {code:'N-PKM',desc:'Nắp phụ kiện máng',              fieldConstraints:{tmc2:['CO01','CO02','CO03','CO04','TEE','RE'],          tmc3:['50','100','150','200','300','400'],              tmc4:[], tmc5:['Z18','ZAM'],     tmc6:[]}},
+    {code:'N-PKT',desc:'Nắp phụ kiện thang',             fieldConstraints:{tmc2:['CO01','CO02','CO03','TEE','RE'],                 tmc3:['100','150','200','300','400'],                   tmc4:[], tmc5:['Z18','ZAM'],     tmc6:[]}},
+  ],
+  // NST – Nan sọt trứng (không có sub-field ngoài loại tấm, không cần per-product constraint)
+  NST: [
+    {code:'EG90', desc:'Tấm nan sọt trứng thô 90°',               fieldConstraints:{}},
+    {code:'EG45', desc:'Tấm nan sọt trứng thô 45°',               fieldConstraints:{}},
+    {code:'EG90S',desc:'Tấm nan sọt trứng 90° sơn tĩnh điện',    fieldConstraints:{}},
+    {code:'EG45S',desc:'Tấm nan sọt trứng 45° sơn tĩnh điện',    fieldConstraints:{}},
+  ],
+};
+
+// ═══════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════
+let S = { view:'overview', gid:null, codes:[], opts:{} };
+let TAGS = [];  // [{id,name,note,color,prodCodes:[{gid,code}]}]
+
+// ═══════════════════════════════════════════════════════════
+// AUTH SYSTEM – 3 cấp: admin / lvl1 / lvl2
+// ═══════════════════════════════════════════════════════════
+let USERS = [
+  {id:'u0', name:'Admin', username:'admin', email:'admin@nsca.vn', password:'admin2026', role:'admin', approved:true},
+];
+// role: 'admin' | 'lvl1' | 'lvl2' | 'pending'
+let CURRENT_USER = null;
+
+const ROLE_LABELS = {admin:'Admin',lvl1:'Cấp 1',lvl2:'Cấp 2',pending:'Chờ duyệt'};
+const ROLE_CSS = {admin:'role-admin',lvl1:'role-1',lvl2:'role-2',pending:'bdg-r'};
+const ROLE_DESC = {
+  admin:'Toàn quyền – quản lý người dùng, nhóm, trường, mã',
+  lvl1:'Sửa đổi bổ sung tất cả (trừ xóa/thêm/sửa nhóm sản phẩm)',
+  lvl2:'Xem, tạo tổ hợp mã và xuất Excel',
+  pending:'Chờ Admin duyệt và cấp quyền'
+};
+
+function canDo(action){
+  if(!CURRENT_USER) return false;
+  const r=CURRENT_USER.role;
+  if(r==='admin') return true;
+  if(r==='lvl1') return !['manage_groups','delete_group','add_group','manage_users'].includes(action);
+  if(r==='lvl2') return ['view','combo','export'].includes(action);
+  return false;
+}
+
+function switchLoginTab(tab, btn){
+  document.querySelectorAll('.login-tab-btn').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  ['login','register','forgot'].forEach(t=>{
+    const el=document.getElementById('tab-'+t);
+    if(el) el.style.display=(t===tab)?'':'none';
+  });
+  // Clear errors on switch
+  ['login-err','reg-err','forgot-err','forgot-ok'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.style.display='none';
+  });
+}
+
+function togglePw(id){
+  const el=document.getElementById(id);
+  el.type=el.type==='password'?'text':'password';
+}
+
+function populateLoginUsers(){
+  // Không cần populate dropdown nữa (dùng text input)
+}
+
+function doLogin(){
+  const username=document.getElementById('login-user').value.trim();
+  const pw=document.getElementById('login-pw').value;
+  const err=document.getElementById('login-err');
+  if(!username){err.textContent='Nhập tên tài khoản.';err.style.display='';return;}
+  if(!pw){err.textContent='Nhập mật khẩu.';err.style.display='';return;}
+  // Hardcoded admin bypass – luôn cho phép đăng nhập admin/admin2026
+  if(username==='admin'&&pw==='admin2026'){
+    let adminUser=USERS.find(u=>u.username==='admin');
+    if(!adminUser){
+      adminUser={id:'u0',name:'Admin',username:'admin',email:'admin@nsca.vn',password:'admin2026',role:'admin',approved:true};
+      USERS.unshift(adminUser);
+    }
+    adminUser.password='admin2026'; adminUser.role='admin'; adminUser.approved=true;
+    err.style.display='none';
+    CURRENT_USER=adminUser;
+    document.getElementById('loginOverlay').style.display='none';
+    document.getElementById('mainApp').style.display='flex';
+    applyRoleUI();
+    renderSb(); go('overview');
+    return;
+  }
+  const user=USERS.find(u=>u.username===username&&u.password===pw&&u.approved);
+  if(!user){
+    const exists=USERS.find(u=>u.username===username);
+    err.textContent=exists&&!exists.approved
+      ?'Tài khoản chưa được Admin duyệt.'
+      :'Tên tài khoản hoặc mật khẩu không đúng.';
+    err.style.display=''; return;
+  }
+  err.style.display='none';
+  CURRENT_USER=user;
+  document.getElementById('loginOverlay').style.display='none';
+  document.getElementById('mainApp').style.display='flex';
+  applyRoleUI();
+  renderSb(); go('overview');
+}
+
+function doRegister(){
+  const name=document.getElementById('reg-name').value.trim();
+  const username=document.getElementById('reg-user').value.trim();
+  const email=document.getElementById('reg-email').value.trim();
+  const pw=document.getElementById('reg-pw').value;
+  const err=document.getElementById('reg-err');
+  if(!name||!username||!email||!pw){err.textContent='Điền đầy đủ thông tin.';err.style.display='';return;}
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){err.textContent='Email không hợp lệ.';err.style.display='';return;}
+  if(pw.length<6){err.textContent='Mật khẩu tối thiểu 6 ký tự.';err.style.display='';return;}
+  if(USERS.find(u=>u.username===username)){err.textContent='Tài khoản đã tồn tại.';err.style.display='';return;}
+  if(USERS.find(u=>u.email===email)){err.textContent='Email đã được dùng bởi tài khoản khác.';err.style.display='';return;}
+  const newUser={id:'u'+Date.now(),name,username,email,password:pw,role:'pending',approved:false};
+  USERS.push(newUser);
+  supa.from('users').insert(newUser).then(()=>showDBStatus('💾 Đã lưu'));
+  err.style.display='none';
+  alert('✅ Đăng ký thành công! Chờ Admin duyệt và cấp quyền để đăng nhập.');
+  switchLoginTab('login', document.getElementById('ltab-login'));
+}
+
+function doLogout(){
+  CURRENT_USER=null;
+  document.getElementById('mainApp').style.display='none';
+  document.getElementById('loginOverlay').style.display='flex';
+  document.getElementById('login-user').value='';
+  document.getElementById('login-pw').value='';
+  document.getElementById('login-err').style.display='none';
+}
+
+// ── EmailJS helper ──
+function sendEmailJS(toEmail, toName, newPassword){
+  if(EMAILJS_PUBLIC_KEY==='YOUR_PUBLIC_KEY'){
+    // Chưa cấu hình EmailJS → hiển thị trong console để test
+    console.warn('EmailJS chưa cấu hình. Mật khẩu mới:', newPassword);
+    return Promise.resolve({status:200, text:'OK (simulated)'});
+  }
+  return emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+    to_email: toEmail,
+    to_name:  toName,
+    new_password: newPassword,
+    app_name: 'NSCA/STARDUCT Product Code Manager'
+  });
+}
+
+// ── Quên mật khẩu ──
+function doForgotPassword(){
+  const email=document.getElementById('forgot-email').value.trim();
+  const err=document.getElementById('forgot-err');
+  const ok=document.getElementById('forgot-ok');
+  const btn=document.getElementById('forgot-btn');
+  err.style.display='none'; ok.style.display='none';
+  if(!email){err.textContent='Nhập email của bạn.';err.style.display='';return;}
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){err.textContent='Email không hợp lệ.';err.style.display='';return;}
+  const user=USERS.find(u=>u.email===email&&u.approved);
+  if(!user){
+    // Không nói rõ có hay không để tránh dò tài khoản
+    ok.textContent='Nếu email tồn tại trong hệ thống, mật khẩu mới sẽ được gửi trong vài phút.';
+    ok.style.display=''; return;
+  }
+  // Tạo mật khẩu mới ngẫu nhiên 10 ký tự
+  const newPw=Math.random().toString(36).slice(2,7).toUpperCase()+Math.random().toString(36).slice(2,7);
+  btn.disabled=true; btn.textContent='Đang gửi...';
+  sendEmailJS(user.email, user.name, newPw)
+    .then(()=>{
+      user.password=newPw;
+      ok.textContent='✅ Mật khẩu mới đã được gửi về email '+email+'. Vui lòng kiểm tra hộp thư (kể cả Spam).';
+      ok.style.display='';
+      document.getElementById('forgot-email').value='';
+    })
+    .catch(e=>{
+      err.textContent='Gửi email thất bại: '+(e.text||e.message||'Lỗi không xác định')+'. Liên hệ Admin.';
+      err.style.display='';
+    })
+    .finally(()=>{btn.disabled=false; btn.textContent='Gửi mật khẩu mới →';});
+}
+
+// ── Đổi mật khẩu (trong app) ──
+function openChangePw(){
+  ['cpw-old','cpw-new','cpw-confirm'].forEach(id=>document.getElementById(id).value='');
+  ['cpw-err','cpw-ok'].forEach(id=>{ const el=document.getElementById(id); if(el) el.style.display='none'; });
+  OM('m-changepw');
+}
+
+function doChangePassword(){
+  const oldPw=document.getElementById('cpw-old').value;
+  const newPw=document.getElementById('cpw-new').value;
+  const confirm=document.getElementById('cpw-confirm').value;
+  const err=document.getElementById('cpw-err');
+  const ok=document.getElementById('cpw-ok');
+  const btn=document.getElementById('cpw-btn');
+  err.style.display='none'; ok.style.display='none';
+  if(!CURRENT_USER){return;}
+  if(oldPw!==CURRENT_USER.password){err.textContent='Mật khẩu hiện tại không đúng.';err.style.display='';return;}
+  if(newPw.length<6){err.textContent='Mật khẩu mới tối thiểu 6 ký tự.';err.style.display='';return;}
+  if(newPw!==confirm){err.textContent='Xác nhận mật khẩu không khớp.';err.style.display='';return;}
+  if(newPw===oldPw){err.textContent='Mật khẩu mới phải khác mật khẩu cũ.';err.style.display='';return;}
+
+  btn.disabled=true; btn.textContent='Đang lưu...';
+  const userEmail=CURRENT_USER.email||'';
+  // Cập nhật mật khẩu
+  CURRENT_USER.password=newPw;
+  const u=USERS.find(x=>x.id===CURRENT_USER.id); if(u) u.password=newPw;
+  supa.from('users').upsert(CURRENT_USER,{onConflict:'id'});
+
+  // Gửi email xác nhận nếu có email
+  const sendConfirm = userEmail
+    ? sendEmailJS(userEmail, CURRENT_USER.name, newPw)
+    : Promise.resolve();
+
+  sendConfirm
+    .then(()=>{
+      ok.textContent='✅ Đổi mật khẩu thành công!'+(userEmail?' Xác nhận đã gửi về '+userEmail+'.':'');
+      ok.style.display='';
+      ['cpw-old','cpw-new','cpw-confirm'].forEach(id=>document.getElementById(id).value='');
+    })
+    .catch(()=>{
+      ok.textContent='✅ Đổi mật khẩu thành công! (Gửi email xác nhận thất bại)';
+      ok.style.display='';
+    })
+    .finally(()=>{btn.disabled=false; btn.textContent='💾 Đổi mật khẩu';});
+}
+
+function applyRoleUI(){
+  if(!CURRENT_USER) return;
+  const r=CURRENT_USER.role;
+  // Show/hide admin-only UI
+  document.querySelectorAll('.auth-admin').forEach(el=>{
+    el.style.display=r==='admin'?'':'none';
+  });
+  document.querySelectorAll('.auth-admin-lvl1').forEach(el=>{
+    el.style.display=(r==='admin'||r==='lvl1')?'':'none';
+  });
+  // Update sidebar user badge
+  const roleClr={admin:'#f59e0b',lvl1:'#3b82f6',lvl2:'#10b981',pending:'#9ca3af'}[r]||'#9ca3af';
+  document.getElementById('sbUser').innerHTML=`
+    <div style="width:28px;height:28px;border-radius:50%;background:${roleClr};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;flex-shrink:0">${CURRENT_USER.name[0]}</div>
+    <div style="flex:1;min-width:0">
+      <div class="sb-user-nm">${CURRENT_USER.name}</div>
+      <div style="font-size:9.5px;color:rgba(255,255,255,.4)">${ROLE_LABELS[r]||r}</div>
+    </div>
+    <span onclick="openChangePw()" title="Đổi mật khẩu" style="cursor:pointer;color:rgba(255,255,255,.35);font-size:13px;padding:3px" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,.35)'">🔑</span>
+    <span onclick="doLogout()" title="Đăng xuất" style="cursor:pointer;color:rgba(255,255,255,.35);font-size:13px;padding:3px" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,.35)'">⏏</span>`;
+}
+
+// ── Admin: User Management ──
+function renderUserMgmt(){
+  setPath([{l:'Quản lý người dùng',b:true}]);
+  let h=`<div class="fac g8 mb12">
+    <div class="sm fw6">Tổng: ${USERS.length} tài khoản</div><div class="f1"></div>
+  </div>
+  <div class="card"><div class="card-b" style="padding:0">`;
+  USERS.forEach((u,i)=>{
+    h+=`<div class="user-row">
+      <div style="width:32px;height:32px;border-radius:50%;background:${u.role==='admin'?'#f59e0b':u.role==='lvl1'?'#3b82f6':u.role==='lvl2'?'#10b981':'#9ca3af'};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0">${u.name[0]}</div>
+      <div class="f1">
+        <div class="fac g6"><span class="fw6" style="font-size:12.5px">${u.name}</span>
+          <span class="role-badge ${ROLE_CSS[u.role]||''}">${ROLE_LABELS[u.role]||u.role}</span>
+          ${!u.approved?'<span class="bdg bdg-r" style="font-size:9px">Chờ duyệt</span>':''}
+        </div>
+        <div class="xs muted">@${u.username} · ${u.email||'(chưa có email)'} · ${ROLE_DESC[u.role]||''}</div>
+      </div>
+      ${u.username!=='admin'?`
+        <select class="fsel" style="height:26px;font-size:11px;padding:0 6px;width:110px" onchange="setUserRole(${i},this.value)">
+          <option value="pending" ${u.role==='pending'?'selected':''}>Chờ duyệt</option>
+          <option value="lvl2" ${u.role==='lvl2'?'selected':''}>Cấp 2</option>
+          <option value="lvl1" ${u.role==='lvl1'?'selected':''}>Cấp 1</option>
+          <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
+        </select>
+        <button class="btn btn-o btn-xs" onclick="approveUser(${i})" ${u.approved?'style="color:var(--grn)"':''}>
+          ${u.approved?'✓ Đã duyệt':'Duyệt'}
+        </button>
+        <button class="btn btn-d btn-xs" onclick="delUser(${i})">🗑</button>
+      `:'<span class="xs muted">Tài khoản gốc</span>'}
+    </div>`;
+  });
+  h+=`</div></div>`;
+  document.getElementById('MC').innerHTML=h;
+}
+
+function setUserRole(i,role){
+  USERS[i].role=role;
+  supa.from('users').upsert(USERS[i],{onConflict:'id'}).then(()=>showDBStatus('💾 Đã lưu'));
+}
+function approveUser(i){
+  USERS[i].approved=true;
+  supa.from('users').upsert(USERS[i],{onConflict:'id'}).then(()=>{showDBStatus('💾 Đã lưu');renderUserMgmt();});
+}
+function delUser(i){
+  if(!confirm('Xoá tài khoản?'))return;
+  const uid=USERS[i].id;
+  USERS.splice(i,1);
+  supa.from('users').delete().eq('id',uid).then(()=>showDBStatus('💾 Đã lưu'));
+  renderUserMgmt();
+}
+
+// ═══════════════════════════════════════════════════════════
+// HƯỚNG DẪN SỬ DỤNG – Flow diagram
+// ═══════════════════════════════════════════════════════════
+const GUIDE_STEPS=[
+  {icon:'📚',title:'1. Thư viện trường',sub:'Định nghĩa các giá trị dùng chung',
+   detail:`<b>Mục đích:</b> Tạo danh sách các trường (Loại cửa, Độ dày, Vật liệu...) và giá trị tương ứng để tái sử dụng ở nhiều nhóm sản phẩm.<br><br>
+   <ol class="guide-step-list">
+     <li>Vào <b>Thư viện trường</b> từ topbar hoặc sidebar</li>
+     <li>Click <b>＋ Thêm trường mới</b></li>
+     <li>Nhập tên trường (VD: Loại cửa), ID tự động tạo</li>
+     <li>Nhập giá trị theo định dạng: <code>F = Cố định (Fixed)</code></li>
+     <li>Lưu — trường này có thể dùng cho mọi nhóm sản phẩm</li>
+   </ol>`
+  },
+  {icon:'📂',title:'2. Nhóm sản phẩm',sub:'Cấu hình từng nhóm mã',
+   detail:`<b>Mục đích:</b> Mỗi nhóm (CG, VCK, EI...) chứa danh sách sản phẩm và ràng buộc giá trị riêng.<br><br>
+   <ol class="guide-step-list">
+     <li>Click vào nhóm trong sidebar (VD: [CG] Cửa gió)</li>
+     <li>Xem bảng ràng buộc per-product — mỗi hàng là 1 sản phẩm</li>
+     <li>Click <b>✏ Sửa ràng buộc</b> để chỉnh giá trị được phép cho từng sản phẩm</li>
+     <li>Click chip để bật/tắt giá trị (chip xanh = được phép)</li>
+     <li>Bảng định nghĩa phía dưới giải thích ý nghĩa từng mã</li>
+   </ol>`
+  },
+  {icon:'⚙️',title:'3. Sửa ràng buộc',sub:'Giới hạn giá trị từng sản phẩm',
+   detail:`<b>Mục đích:</b> Mỗi sản phẩm có bộ giá trị riêng — VD: SAG dùng nan 1/2, VCD-H không có áp suất, RVCD-H không có loại cánh.<br><br>
+   <ol class="guide-step-list">
+     <li>Click <b>✏ Sửa ràng buộc</b> trong trang nhóm hoặc Dashboard</li>
+     <li>Modal hiện từng sản phẩm — click chip để bật/tắt giá trị</li>
+     <li>Chip <b>xanh</b> = giá trị được phép, chip <b>trắng</b> = bị loại</li>
+     <li>Trường Tuỳ chọn: nếu không chọn gì = không thêm vào mã</li>
+     <li>Lưu — ràng buộc áp dụng ngay khi tạo mã</li>
+   </ol>`
+  },
+  {icon:'⚡',title:'4. Tạo tổ hợp mã',sub:'Sinh mã tự động hàng loạt',
+   detail:`<b>Mục đích:</b> Chọn sản phẩm → hệ thống tự ghép tất cả tổ hợp giá trị hợp lệ thành mã sản phẩm đầy đủ.<br><br>
+   <ol class="guide-step-list">
+     <li>Click <b>⚡ Tạo tổ hợp mã</b> trên topbar</li>
+     <li>Tích chọn sản phẩm ở panel trái (có thể chọn nhiều nhóm cùng lúc)</li>
+     <li>Panel phải hiển thị ràng buộc và ước tính số mã sẽ tạo</li>
+     <li>Click <b>⚡ Tạo mã</b> — kết quả hiện bảng bên dưới</li>
+     <li>Kiểm tra và click <b>↓ Xuất Excel</b> để tải về</li>
+   </ol>`
+  },
+  {icon:'🏷',title:'5. Ghi chú / Tags',sub:'Quản lý ghi chú theo dự án',
+   detail:`<b>Mục đích:</b> Tạo Tag (VD: Dự án A, Kho HN) → gán sản phẩm → khi xuất Excel tự động thêm ghi chú + đặc tính vào từng mã.<br><br>
+   <ol class="guide-step-list">
+     <li>Vào <b>Ghi chú tổng / Tags</b> trong sidebar</li>
+     <li>Click <b>＋ Tạo Tag mới</b> — nhập tên và nội dung ghi chú</li>
+     <li>Click <b>＋ Gán sản phẩm</b> để chọn sản phẩm thuộc Tag này</li>
+     <li>Click <b>🔧 Cấu hình ghi chú</b> để bật/tắt từng đặc tính trong cột ghi chú</li>
+     <li>Click <b>↓ Excel</b> để xuất danh sách mã kèm ghi chú tự động</li>
+   </ol>`
+  },
+  {icon:'↓',title:'6. Xuất Excel',sub:'Tải file kết quả',
+   detail:`<b>Các cách xuất Excel:</b><br><br>
+   <ol class="guide-step-list">
+     <li><b>Xuất theo nhóm:</b> Vào trang nhóm → Tạo mã → ↓ Excel [nhóm]</li>
+     <li><b>Xuất tất cả:</b> Topbar → ↓ Xuất Excel (bao gồm tất cả nhóm + bảng nguyên tắc)</li>
+     <li><b>Xuất theo Tag:</b> Ghi chú tổng → ↓ Excel (kèm ghi chú đặc tính)</li>
+     <li><b>Xuất tất cả Tags:</b> Ghi chú tổng → ↓ Xuất tất cả Tags</li>
+   </ol><br>File Excel gồm: STT, Mã sản phẩm, các cột đặc tính, Tên đầy đủ, Ghi chú.`
+  },
+];
+
+let _guideActive=null;
+function renderGuide(){
+  setPath([{l:'Hướng dẫn sử dụng',b:true}]);
+  let h=`<div class="notice ni mb12">📖 Click vào từng bước để xem hướng dẫn chi tiết.</div>`;
+
+  // Flow diagram
+  h+=`<div class="guide-flow">`;
+  GUIDE_STEPS.forEach((s,i)=>{
+    h+=`<div class="flow-step">
+      <div class="flow-node ${_guideActive===i?'active':''}" onclick="toggleGuideStep(${i})">
+        <div class="flow-node-icon">${s.icon}</div>
+        <div class="flow-node-title">${s.title}</div>
+        <div class="flow-node-sub">${s.sub}</div>
+      </div>
+    </div>`;
+    if(i<GUIDE_STEPS.length-1) h+=`<div class="flow-arrow">→</div>`;
+  });
+  h+=`</div>`;
+
+  // Detail panel
+  if(_guideActive!==null){
+    const s=GUIDE_STEPS[_guideActive];
+    h+=`<div class="flow-detail">
+      <div class="flow-detail-title">${s.icon} ${s.title}</div>
+      <div style="font-size:12.5px;line-height:1.7;color:var(--t2)">${s.detail}</div>
+    </div>`;
+  }
+
+  // Quick reference table
+  h+=`<div class="card"><div class="card-h"><span class="card-t">🔑 Phân quyền nhanh</span></div>
+  <div style="overflow-x:auto"><table class="dt">
+    <thead><tr><th>Chức năng</th><th>Admin</th><th>Cấp 1</th><th>Cấp 2</th></tr></thead>
+    <tbody>
+      ${[
+        ['Xem toàn bộ','✅','✅','✅'],
+        ['Tạo tổ hợp mã + Xuất Excel','✅','✅','✅'],
+        ['Sửa ràng buộc sản phẩm','✅','✅','❌'],
+        ['Thêm/sửa trường & giá trị','✅','✅','❌'],
+        ['Sửa ghi chú / Tags','✅','✅','❌'],
+        ['Thêm/sửa/xóa sản phẩm','✅','✅','❌'],
+        ['Thêm/xóa nhóm sản phẩm','✅','❌','❌'],
+        ['Quản lý người dùng','✅','❌','❌'],
+      ].map(([fn,...roles])=>`<tr><td>${fn}</td>${roles.map(r=>`<td style="text-align:center">${r}</td>`).join('')}</tr>`).join('')}
+    </tbody>
+  </table></div></div>`;
+
+  document.getElementById('MC').innerHTML=h;
+}
+
+function toggleGuideStep(i){
+  _guideActive=(_guideActive===i)?null:i;
+  renderGuide();
+}
+
+document.addEventListener('DOMContentLoaded', async ()=>{
+  await loadFromDB();
+  // Không tự đăng nhập – chờ user nhập
+});
+
+// ═══════════════════════════════════════════════════════════
+// SIDEBAR
+// ═══════════════════════════════════════════════════════════
+function requirePerm(action,fn){
+  if(!canDo(action)){alert('Bạn không có quyền thực hiện thao tác này.');return;}
+  fn();
+}
+
+// Guard wrappers for write operations
+function guardedOpenAddFld(gid){requirePerm('edit',()=>openAddFld(gid));}
+function guardedDelFld(gid,fid){requirePerm('edit',()=>delFld(gid,fid));}
+function guardedOpenEditGrp(gid){requirePerm('edit',()=>{openEditGrp(gid);injectEditGrpModal();});}
+function guardedOpenEditCG(){requirePerm('edit',()=>{injectEditCGModal();openEditCG();});}
+function guardedOpenAddProd(gid){requirePerm('edit',()=>openAddProd(gid));}
+function guardedDelProd(gid,idx){requirePerm('edit',()=>delProd(gid,idx));}
+function guardedOpenEditProd(gid,idx){requirePerm('edit',()=>openEditProd(gid,idx));}
+function guardedOpenManageGroups(){requirePerm('manage_groups',()=>openManageGroups());}
+
+
+function renderSb(f=''){
+  const lo=f.toLowerCase();
+  let h=`<div class="sb-sec" style="display:flex;align-items:center;justify-content:space-between;padding-right:6px">
+    <span>Nhóm mã sản phẩm</span>
+    <span onclick="guardedOpenManageGroups()" title="Thêm/bớt nhóm" style="cursor:pointer;color:rgba(255,255,255,.4);font-size:13px;line-height:1;padding:2px 4px;border-radius:3px;transition:all .1s" onmouseover="this.style.background='rgba(255,255,255,.1)';this.style.color='#fff'" onmouseout="this.style.background='';this.style.color='rgba(255,255,255,.4)'">⚙</span>
+  </div>`;
+
+  // Sort groups by order
+  const sortedGroups=[...GROUPS].sort((a,b)=>{
+    const oa=(GROUP_VISIBILITY[a.id]||{}).order??999;
+    const ob=(GROUP_VISIBILITY[b.id]||{}).order??999;
+    return oa-ob;
+  });
+
+  sortedGroups.forEach(g=>{
+    if(f&&!g.name.toLowerCase().includes(lo)&&!g.id.toLowerCase().includes(lo))return;
+    const n=g.type==='CG'?CG_PRODUCTS.length:(GRP_PRODUCTS[g.id]||g.fields[0]?.values||[]).length;
+    const vis=GROUP_VISIBILITY[g.id]||{}; const hidden=vis.hidden||false;
+    h+=`<div class="nv ${S.view==='group'&&S.gid===g.id?'on':''} ${hidden?'nv-hide':''}" onclick="goGrp('${g.id}')">
+      <span class="nv-i">📂</span><span class="nv-l">[${g.id}] ${g.name}</span>
+      <span class="nv-b">${n}</span>
+      <span class="nv-eye" title="${hidden?'Bật hiển thị':'Ẩn nhóm'}" onclick="event.stopPropagation();toggleGrpVis('${g.id}')">${hidden?'👁':'🚫'}</span>
+    </div>`;
+  });
+
+  h+=`<div class="sb-sec" style="margin-top:4px">Công cụ</div>
+    <div class="nv ${S.view==='dashboard'?'on':''}" onclick="go('dashboard')"><span class="nv-i">⚙️</span><span class="nv-l">Dashboard ràng buộc</span></div>
+    <div class="nv ${S.view==='fieldlib'?'on':''}" onclick="go('fieldlib')"><span class="nv-i">📚</span><span class="nv-l">Thư viện trường</span><span class="nv-b">${FIELD_LIBRARY.length}</span></div>
+    <div class="nv ${S.view==='combo'?'on':''}" onclick="go('combo')"><span class="nv-i">⚡</span><span class="nv-l">Tạo tổ hợp mã</span></div>
+    <div class="nv ${S.view==='allcodes'?'on':''}" onclick="go('allcodes')"><span class="nv-i">📋</span><span class="nv-l">Danh sách mã</span><span class="nv-b">${S.codes.length}</span></div>
+    <div class="nv ${S.view==='tags'?'on':''}" onclick="go('tags')"><span class="nv-i">🏷</span><span class="nv-l">Ghi chú tổng / Tags</span><span class="nv-b">${TAGS.length}</span></div>
+    <div class="nv ${S.view==='guide'?'on':''}" onclick="go('guide')"><span class="nv-i">📖</span><span class="nv-l">Hướng dẫn sử dụng</span></div>
+    ${CURRENT_USER&&CURRENT_USER.role==='admin'?`<div class="nv ${S.view==='users'?'on':''}" onclick="go('users')"><span class="nv-i">👥</span><span class="nv-l">Quản lý người dùng</span><span class="nv-b">${USERS.filter(u=>!u.approved).length||''}</span></div>`:''}
+    <div style="padding:7px 12px;border-top:1px solid rgba(255,255,255,.06);font-size:10px;color:rgba(255,255,255,.22);margin-top:4px">starduct.vn · v15.0</div>`;
+  document.getElementById('sbNav').innerHTML=h;
+}
+function filterSb(v){renderSb(v);}
+
+function toggleGrpVis(gid){
+  if(!GROUP_VISIBILITY[gid]) GROUP_VISIBILITY[gid]={};
+  GROUP_VISIBILITY[gid].hidden=!GROUP_VISIBILITY[gid].hidden;
+  renderSb(); saveToDB('group_visibility');
+}
+
+// ── Yêu cầu 4: Quản lý nhóm – thêm/bớt/sửa tên ──
+function openManageGroups(){
+  renderManageGroupsBody();
+  OM('m-managegroups');
+}
+function renderManageGroupsBody(){
+  let h=`<div class="notice ni mb12">⚙ Thêm, bớt, đổi tên nhóm. Xoá nhóm sẽ xoá cả sản phẩm và mã đã tạo.</div>`;
+  h+=`<div class="card mb12"><div class="card-b" style="padding:0">`;
+  GROUPS.forEach((g,gi)=>{
+    const n=g.type==='CG'?CG_PRODUCTS.length:(GRP_PRODUCTS[g.id]||[]).length;
+    const vis=GROUP_VISIBILITY[g.id]||{};
+    h+=`<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--bd)">
+      <span class="ctag" style="min-width:44px;text-align:center">${g.id}</span>
+      <div class="f1">
+        <div class="fw6" style="font-size:12.5px">${g.name}</div>
+        <div class="xs muted">${n} sản phẩm · ${S.codes.filter(c=>c.groupId===g.id).length} mã đã tạo</div>
+      </div>
+      <button class="btn btn-o btn-xs" onclick="editGrpNm('${g.id}')"  >✏ Tên</button>
+      <button class="btn btn-o btn-xs" onclick="toggleGrpVis('${g.id}');renderManageGroupsBody()">${vis.hidden?'👁 Hiện':'🚫 Ẩn'}</button>
+      ${g.type!=='CG'?`<button class="btn btn-d btn-xs" onclick="delGrpFull('${g.id}')">🗑 Xoá</button>`:'<span class="xs muted">Nhóm gốc</span>'}
+    </div>`;
+  });
+  h+=`</div></div>`;
+
+  // Add new group form
+  h+=`<div class="card"><div class="card-h"><span class="card-t">＋ Thêm nhóm mới</span></div>
+    <div class="card-b">
+      <div class="fg2">
+        <div class="fr"><div class="fl">Tên nhóm <span class="req">*</span></div><input class="fi" id="mg-nm" placeholder="VD: Cửa chống cháy"></div>
+        <div class="fr"><div class="fl">ID <span class="req">*</span></div><input class="fi mono" id="mg-id" placeholder="VD: CC" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"></div>
+      </div>
+      <div class="fr"><div class="fl">Format mã</div><input class="fi mono" id="mg-fmt" placeholder="[TRƯỜNG 1] / [TRƯỜNG 2] / ..."></div>
+      <div class="fr"><div class="fl">Ví dụ mã</div><input class="fi mono" id="mg-ex" placeholder="VD: ABC-100/Z18"></div>
+      <button class="btn btn-p" onclick="doAddGrpFull()">＋ Tạo nhóm</button>
+    </div></div>`;
+
+  document.getElementById('managegroups-body').innerHTML=h;
+}
+
+function doAddGrpFull(){
+  const nm=document.getElementById('mg-nm').value.trim();
+  const id=document.getElementById('mg-id').value.trim().toUpperCase();
+  if(!nm||!id){alert('Điền đủ Tên và ID.');return;}
+  if(GROUPS.find(g=>g.id===id)){alert('ID ['+id+'] đã tồn tại.');return;}
+  GROUPS.push({id,name:nm,format:document.getElementById('mg-fmt').value.trim()||'[TRƯỜNG 1]/[TRƯỜNG 2]',
+    example:document.getElementById('mg-ex').value.trim()||'',type:'generic',fields:[]});
+  GRP_PRODUCTS[id]=[];
+  ['mg-nm','mg-id','mg-fmt','mg-ex'].forEach(x=>document.getElementById(x).value='');
+  renderSb(); renderManageGroupsBody();
+  saveToDB('grp_products'); saveToDB('groups_extra');
+}
+
+function delGrpFull(gid){
+  const cnt=S.codes.filter(c=>c.groupId===gid).length;
+  if(!confirm(`Xoá nhóm [${gid}]?\n${cnt} mã đã tạo sẽ bị xoá.`)) return;
+  const i=GROUPS.findIndex(g=>g.id===gid); if(i>=0) GROUPS.splice(i,1);
+  delete GRP_PRODUCTS[gid];
+  S.codes=S.codes.filter(c=>c.groupId!==gid);
+  renderSb(); renderManageGroupsBody();
+  saveToDB('grp_products'); saveToDB('groups_extra'); saveToDB('codes');
+}
+
+// ── Yêu cầu 1: Sửa code + desc của từng sản phẩm ──
+function openEditProd(gid, idx){
+  const isCG=(gid==='CG');
+  const p=isCG?CG_PRODUCTS[idx]:(GRP_PRODUCTS[gid]||[])[idx];
+  if(!p) return;
+  document.getElementById('editprod-t').textContent=`Sửa sản phẩm [${gid}]`;
+  document.getElementById('ep-gid').value=gid;
+  document.getElementById('ep-idx').value=idx;
+  document.getElementById('ep-code').value=p.code;
+  document.getElementById('ep-desc').value=p.desc||'';
+  OM('m-editprod');
+}
+// ── Thêm sản phẩm mới vào nhóm ──
+function openAddProd(gid){
+  document.getElementById('editprod-t').textContent=`Thêm sản phẩm vào [${gid}]`;
+  document.getElementById('ep-gid').value=gid;
+  document.getElementById('ep-idx').value=-1;
+  document.getElementById('ep-code').value='';
+  document.getElementById('ep-desc').value='';
+  OM('m-editprod');
+}
+function doSaveProd(){
+  const gid=document.getElementById('ep-gid').value;
+  const idx=parseInt(document.getElementById('ep-idx').value);
+  const code=document.getElementById('ep-code').value.trim();
+  const desc=document.getElementById('ep-desc').value.trim();
+  if(!code){alert('Nhập mã sản phẩm.');return;}
+  if(gid==='CG'){
+    if(idx<0) CG_PRODUCTS.push({code,desc,loai_cua:[],khung:[],nan:[],mat:[],kc:[],vat_lieu:[''],option:[],nan_kc_fixed:false});
+    else { CG_PRODUCTS[idx].code=code; CG_PRODUCTS[idx].desc=desc; }
+    saveToDB('cg_products');
+  } else {
+    if(!GRP_PRODUCTS[gid]) GRP_PRODUCTS[gid]=[];
+    if(idx<0) GRP_PRODUCTS[gid].push({code,desc,fieldConstraints:{}});
+    else { GRP_PRODUCTS[gid][idx].code=code; GRP_PRODUCTS[gid][idx].desc=desc; }
+    saveToDB('grp_products');
+  }
+  CM('m-editprod');
+  renderSb();
+  if(S.view==='group'&&S.gid===gid) renderGrp(gid);
+  else if(S.view==='dashboard') renderDashboard();
+}
+
+// ── Xoá sản phẩm khỏi nhóm ──
+function delProd(gid, idx){
+  const isCG=(gid==='CG');
+  const prods=isCG?CG_PRODUCTS:(GRP_PRODUCTS[gid]||[]);
+  const p=prods[idx];
+  if(!p||!confirm(`Xoá sản phẩm [${p.code}]?`)) return;
+  prods.splice(idx,1);
+  renderSb();
+  if(S.view==='group'&&S.gid===gid) renderGrp(gid);
+  else if(S.view==='dashboard') renderDashboard();
+  saveToDB(isCG?'cg_products':'grp_products');
+}
+
+function setPath(parts){
+  document.getElementById('tbPath').innerHTML = parts.map((p,i)=>
+    `<span class="${p.b?'tb-b':'tb-path'}">${p.l}</span>${i<parts.length-1?'<span class="tb-sep"> › </span>':''}`
+  ).join('');
+}
+function go(v){ S.view=v; S.gid=null; renderSb();
+  if(v==='overview') renderOv();
+  else if(v==='dashboard') renderDashboard();
+  else if(v==='combo') renderCombo();
+  else if(v==='allcodes') renderAllCodes();
+  else if(v==='tags') renderTags();
+  else if(v==='fieldlib') renderFieldLib();
+  else if(v==='guide'){_guideActive=null;renderGuide();}
+  else if(v==='users'&&CURRENT_USER?.role==='admin') renderUserMgmt();
+}
+function goGrp(id){ S.view='group'; S.gid=id; renderSb();
+  setPath([{l:'Nhóm mã'},{l:`[${id}] ${GROUPS.find(g=>g.id===id).name}`,b:true}]);
+  renderGrp(id);
+}
+
+// ═══════════════════════════════════════════════════════════
+// FIELD LIBRARY – Thư viện trường toàn cục
+// ═══════════════════════════════════════════════════════════
+function renderFieldLib(){
+  setPath([{l:'Thư viện trường toàn cục',b:true}]);
+  let h=`<div class="notice ni mb12">
+    📚 <b>Thư viện trường</b>: Định nghĩa các trường dùng chung. Mỗi nhóm sản phẩm có thể chọn dùng các trường này thay vì tạo lại từ đầu.
+    Khi sửa giá trị ở đây, tất cả sản phẩm dùng trường đó đều được cập nhật.
+  </div>
+  <div class="fac g8 mb12">
+    <div class="sm fw6">Trường trong thư viện: ${FIELD_LIBRARY.length}</div>
+    <div class="f1"></div>
+    <button class="btn btn-p btn-sm" onclick="openAddFlibFld()">＋ Thêm trường mới</button>
+  </div>`;
+
+  if(!FIELD_LIBRARY.length){
+    h+=`<div style="text-align:center;padding:60px;color:var(--t4)"><div style="font-size:36px;margin-bottom:8px">📚</div><div>Chưa có trường nào trong thư viện.</div></div>`;
+  } else {
+    h+=`<div class="card"><div class="card-b" style="padding:0">`;
+    FIELD_LIBRARY.forEach((fl,i)=>{
+      const valStr=fl.values.slice(0,6).map(v=>`<span class="ctag" style="font-size:10px;margin-right:2px">${v.code||'""'}</span>`).join('')
+        +(fl.values.length>6?`<span class="xs muted">+${fl.values.length-6}</span>`:'');
+      h+=`<div class="flib-row">
+        <div class="field-order-badge">${i+1}</div>
+        <div class="f1">
+          <div class="flib-name">${fl.name} <span class="xs muted mono" style="font-weight:400">[${fl.id}]</span></div>
+          ${fl.desc?`<div class="xs muted">${fl.desc}</div>`:''}
+          <div style="margin-top:4px">${valStr}</div>
+        </div>
+        <span class="xs muted">${fl.values.length} giá trị</span>
+        <button class="btn btn-o btn-xs" onclick="openEditFlibFld('${fl.id}')">✏ Sửa</button>
+        <button class="ib del" onclick="delFlibFld('${fl.id}')">🗑</button>
+      </div>`;
+    });
+    h+=`</div></div>`;
+  }
+
+  document.getElementById('MC').innerHTML=h;
+}
+
+function openAddFlibFld(editId=null){
+  document.getElementById('flib-edit-id').value=editId||'';
+  if(editId){
+    const fl=FIELD_LIBRARY.find(x=>x.id===editId);
+    document.getElementById('addflibfld-t').textContent='Sửa trường: '+fl.name;
+    document.getElementById('flib-nm').value=fl.name;
+    document.getElementById('flib-id').value=fl.id;
+    document.getElementById('flib-desc').value=fl.desc||'';
+    document.getElementById('flib-vals').value=fl.values.map(v=>`${v.code} = ${v.desc}${v.note?' | '+v.note:''}`).join('\n');
+  } else {
+    document.getElementById('addflibfld-t').textContent='Thêm trường vào Thư viện';
+    ['flib-nm','flib-id','flib-desc','flib-vals'].forEach(id=>document.getElementById(id).value='');
+  }
+  OM('m-addflibfld');
+}
+function openEditFlibFld(id){ openAddFlibFld(id); }
+
+function doSaveFlibFld(){
+  const nm=document.getElementById('flib-nm').value.trim();
+  if(!nm){alert('Nhập tên trường.');return;}
+  let id=document.getElementById('flib-id').value.trim();
+  if(!id) id='fl_'+nm.toLowerCase().replace(/[^a-z0-9]/g,'_')+'_'+Date.now().toString().slice(-4);
+  const desc=document.getElementById('flib-desc').value.trim();
+  const vals=document.getElementById('flib-vals').value.trim().split('\n').map(l=>{
+    if(!l.trim()) return null;
+    const eqI=l.indexOf('='); if(eqI<0) return {code:l.trim(),desc:'',note:''};
+    const code=l.slice(0,eqI).trim();
+    const rest=l.slice(eqI+1);
+    const pipeI=rest.indexOf('|');
+    return {code,desc:pipeI<0?rest.trim():rest.slice(0,pipeI).trim(),note:pipeI<0?'':rest.slice(pipeI+1).trim()};
+  }).filter(Boolean);
+  const editId=document.getElementById('flib-edit-id').value;
+  if(editId){
+    const fi=FIELD_LIBRARY.findIndex(x=>x.id===editId);
+    if(fi>=0) FIELD_LIBRARY[fi]={id:editId,name:nm,desc,values:vals};
+  } else {
+    if(FIELD_LIBRARY.find(x=>x.id===id)){id+='_'+Date.now().toString().slice(-4);}
+    FIELD_LIBRARY.push({id,name:nm,desc,values:vals});
+  }
+  CM('m-addflibfld'); renderSb(); renderFieldLib(); saveToDB('field_library');
+}
+
+function delFlibFld(id){
+  if(!confirm('Xoá trường này khỏi thư viện?')) return;
+  FIELD_LIBRARY=FIELD_LIBRARY.filter(x=>x.id!==id);
+  renderFieldLib(); saveToDB('field_library');
+}
+
+// ── Product Schema Builder ──
+let _psGid=null;
+let _psSchemaDraft=[];
+
+function openProdSchema(gid){
+  _psGid=gid;
+  const g=GROUPS.find(x=>x.id===gid);
+  // Clone existing schema or default from current fields
+  _psSchemaDraft=(g.prodSchema||g.fields.map(f=>({
+    fieldId:null, name:f.name, type:f.type,
+    allowedCodes:f.values.map(v=>v.code),
+    _localField:f
+  }))).map(s=>({...s}));
+
+  document.getElementById('prodschema-t').textContent='Cấu hình trường – ['+gid+'] '+g.name;
+  renderProdSchemaBody();
+  OM('m-prodschema');
+}
+
+function renderProdSchemaBody(){
+  const g=GROUPS.find(x=>x.id===_psGid);
+  let h=`<div class="notice ni mb12">
+    ℹ️ Chọn trường từ <b>Thư viện toàn cục</b> hoặc tạo trường cục bộ. Mỗi trường có thể giới hạn giá trị được phép.
+    Trường <b>#1</b> = mã nhóm sản phẩm (VD: SAG, VCD-H...).
+  </div>`;
+
+  // Current schema
+  h+=`<div class="card mb12"><div class="card-h"><span class="card-t">Trường đã cấu hình (${_psSchemaDraft.length})</span>
+    <button class="btn btn-o btn-xs" onclick="addSchemaFromLib()">＋ Thêm từ thư viện</button>
+    <button class="btn btn-o btn-xs" onclick="addSchemaLocal()">＋ Tạo trường mới</button>
+  </div>`;
+
+  if(!_psSchemaDraft.length){
+    h+=`<div style="padding:16px;text-align:center;color:var(--t4)">Chưa có trường. Thêm trường từ thư viện hoặc tạo mới.</div>`;
+  } else {
+    h+=`<div id="schema-list">`;
+    _psSchemaDraft.forEach((s,si)=>{
+      // Find values to show
+      const srcField=s.fieldId?FIELD_LIBRARY.find(x=>x.id===s.fieldId):s._localField;
+      const allVals=srcField?srcField.values:[];
+      const allowedSet=new Set(s.allowedCodes||allVals.map(v=>v.code));
+      h+=`<div class="prod-schema-row" data-si="${si}">
+        <span class="drag-handle" title="Kéo để sắp xếp">⠿</span>
+        <span class="field-order-badge">${si+1}</span>
+        <div class="f1">
+          <div class="fac g6" style="margin-bottom:4px">
+            <span class="fw6" style="font-size:12.5px">${s.name}</span>
+            ${s.fieldId?`<span class="xs muted mono">[${s.fieldId}]</span>`:'<span class="xs" style="color:var(--grn)">trường cục bộ</span>'}
+            <select class="fsel" style="height:24px;font-size:11px;padding:0 6px;width:auto" onchange="setSchemType(${si},this.value)">
+              <option value="required" ${s.type==='required'?'selected':''}>Bắt buộc</option>
+              <option value="optional" ${s.type==='optional'?'selected':''}>Tuỳ chọn</option>
+            </select>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:3px">
+            ${allVals.map(v=>`<span class="chip ${allowedSet.has(v.code)?'on':''}" style="font-size:10.5px"
+              onclick="toggleSchemaVal(${si},'${esc(v.code)}')" title="${v.desc}">${v.code||'(trống)'}</span>`).join('')}
+            ${allVals.length===0?`<span class="xs muted">Trường này không có giá trị cố định (nhập tự do)</span>`:''}
+          </div>
+        </div>
+        <button class="ib del" onclick="removeSchemaField(${si})" title="Xoá trường này">✕</button>
+      </div>`;
+    });
+    h+=`</div>`;
+  }
+  h+=`</div>`;
+
+  // Add from library picker
+  h+=`<div class="card"><div class="card-h"><span class="card-t">📚 Thư viện trường sẵn có</span></div>
+    <div class="card-b" style="padding:0">
+    ${FIELD_LIBRARY.map(fl=>`<div class="flib-row">
+      <div class="f1"><div class="flib-name">${fl.name} <span class="xs muted mono">[${fl.id}]</span></div>
+        <div class="xs muted">${fl.desc||''}</div>
+      </div>
+      <button class="btn btn-p btn-xs" onclick="addSchemaField('${fl.id}')">＋ Dùng</button>
+    </div>`).join('')}
+    </div></div>`;
+
+  document.getElementById('prodschema-body').innerHTML=h;
+}
+
+function addSchemaField(flibId){
+  const fl=FIELD_LIBRARY.find(x=>x.id===flibId);
+  if(!fl) return;
+  if(_psSchemaDraft.find(s=>s.fieldId===flibId)){
+    alert('Trường này đã được thêm rồi.'); return;
+  }
+  _psSchemaDraft.push({fieldId:flibId,name:fl.name,type:'required',allowedCodes:fl.values.map(v=>v.code)});
+  renderProdSchemaBody();
+}
+function addSchemaFromLib(){ document.getElementById('schema-list')?.scrollIntoView({behavior:'smooth'}); }
+function addSchemaLocal(){
+  const nm=prompt('Tên trường mới:'); if(!nm) return;
+  const valsRaw=prompt('Giá trị (CODE=Mô tả, cách nhau bởi dấu phẩy. VD: F=Fixed, O=Open)','');
+  const vals=(valsRaw||'').split(',').map(v=>{
+    const eq=v.indexOf('='); return eq<0?{code:v.trim(),desc:'',note:''}:{code:v.slice(0,eq).trim(),desc:v.slice(eq+1).trim(),note:''};
+  }).filter(v=>v.code);
+  const localFld={id:'loc_'+Date.now(),name:nm,desc:'',values:vals};
+  _psSchemaDraft.push({fieldId:null,name:nm,type:'required',allowedCodes:vals.map(v=>v.code),_localField:localFld});
+  renderProdSchemaBody();
+}
+function removeSchemaField(si){ _psSchemaDraft.splice(si,1); renderProdSchemaBody(); }
+function setSchemType(si,v){ _psSchemaDraft[si].type=v; }
+function toggleSchemaVal(si,code){
+  const s=_psSchemaDraft[si];
+  const srcField=s.fieldId?FIELD_LIBRARY.find(x=>x.id===s.fieldId):s._localField;
+  if(!s.allowedCodes) s.allowedCodes=(srcField?srcField.values:[]).map(v=>v.code);
+  const i=s.allowedCodes.indexOf(code);
+  if(i>=0) s.allowedCodes.splice(i,1); else s.allowedCodes.push(code);
+  renderProdSchemaBody();
+}
+function doSaveProdSchema(){
+  const g=GROUPS.find(x=>x.id===_psGid);
+  g.prodSchema=_psSchemaDraft.map(s=>({...s}));
+  CM('m-prodschema');
+  if(S.view==='fieldlib') renderFieldLib();
+  else if(S.view==='group'&&S.gid===_psGid) renderGrp(_psGid);
+  alert(`✅ Đã lưu ${_psSchemaDraft.length} trường cho [${_psGid}]`);
+}
+
+// ═══════════════════════════════════════════════════════════
+// OVERVIEW
+// ═══════════════════════════════════════════════════════════
+function renderOv(){
+  setPath([{l:'Tổng quan',b:true}]);
+  const tf=GROUPS.reduce((a,g)=>a+(g.type==='CG'?CG_PRODUCTS.length:g.fields.length),0);
+  let h=`<div class="stats">
+    <div class="stat"><div class="stat-n" style="color:var(--blue)">${GROUPS.length}</div><div class="stat-l">Nhóm mã</div></div>
+    <div class="stat"><div class="stat-n" style="color:var(--grn)">${tf}</div><div class="stat-l">SP / Trường</div></div>
+    <div class="stat"><div class="stat-n" style="color:var(--navy)">${S.codes.length}</div><div class="stat-l">Mã đã tạo</div></div>
+    <div class="stat"><div class="stat-n" style="color:#7c3aed">${TAGS.length}</div><div class="stat-l">Tags ghi chú</div></div>
+  </div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">`;
+  GROUPS.forEach(g=>{
+    h+=`<div class="card" style="cursor:pointer" onclick="goGrp('${g.id}')">
+      <div class="card-h"><span style="font-size:14px">📂</span>
+        <div class="f1"><div class="card-t">[${g.id}] ${g.name}</div>
+        <div class="xs muted" style="margin-top:1px">${S.codes.filter(c=>c.groupId===g.id).length} mã đã tạo</div></div>
+        <span class="xs" style="color:var(--blue)">Xem →</span></div>
+      <div style="padding:8px 12px">
+        <div class="fmt" style="cursor:default"><span class="fmt-l">Format</span><span class="fmt-v">${g.format}</span></div>
+        <div class="xs muted">VD: <span class="mono">${g.example}</span></div>
+      </div></div>`;
+  });
+  h+=`</div>`;
+  document.getElementById('MC').innerHTML=h;
+}
+
+// ═══════════════════════════════════════════════════════════
+// DASHBOARD – Xem & sửa tất cả ràng buộc + format mã
+// ═══════════════════════════════════════════════════════════
+function renderDashboard(){
+  setPath([{l:'Dashboard ràng buộc mã',b:true}]);
+  let h=`<div class="notice ni mb12">⚙️ Xem và chỉnh sửa toàn bộ ràng buộc mã cho tất cả nhóm. Thay đổi sẽ áp dụng ngay khi tạo mã mới.</div>`;
+
+  // CG Section
+  h+=`<div class="card mb12">
+    <div class="card-h">
+      <span style="font-size:14px">📂</span>
+      <span class="card-t">[CG] Cửa gió / Miệng gió</span>
+      <div class="fmt-v" style="font-size:10px;flex:2;color:var(--t3)">${GROUPS.find(g=>g.id==='CG').format}</div>
+      <button class="btn btn-o btn-xs" onclick="openFmt('CG')">✏ Format</button>
+      <button class="btn btn-p btn-sm" onclick="guardedOpenEditCG()">✏ Sửa ràng buộc CG</button>
+    </div>
+    <div style="overflow-x:auto">
+    <table class="dt">
+      <thead><tr><th style="min-width:120px">Tên cửa</th><th>Loại cửa</th><th>Loại khung</th><th>Loại nan (pos4)</th><th>Mặt viền (pos5a)</th><th>KC nan (pos5b)</th><th>Vật liệu</th><th>Option</th></tr></thead>
+      <tbody id="cg-tbl-body"></tbody>
+    </table></div></div>`;
+
+  // Other groups – per-product table nếu có GRP_PRODUCTS
+  GROUPS.filter(g=>g.type!=='CG').forEach(g=>{
+    const prods=GRP_PRODUCTS[g.id]||[];
+    const otherF=g.fields.slice(1);
+    h+=`<div class="card mb12">
+      <div class="card-h">
+        <span style="font-size:14px">📂</span>
+        <span class="card-t">[${g.id}] ${g.name}</span>
+        <div class="fmt-v" style="font-size:10px;flex:2;color:var(--t3)">${g.format}</div>
+        <span class="xs muted">${prods.length} sản phẩm</span>
+        <button class="btn btn-o btn-xs" onclick="openFmt('${g.id}')">✏ Format</button>
+        <button class="btn btn-p btn-sm" onclick="guardedOpenEditGrp('${g.id}')">✏ Sửa ràng buộc</button>
+      </div>
+      <div style="overflow-x:auto">
+      <table class="dt">
+        <thead><tr>
+          <th style="min-width:110px">Sản phẩm</th>
+          ${otherF.map(f=>`<th style="white-space:nowrap">${f.name}</th>`).join('')}
+        </tr></thead>
+        <tbody>${prods.length ? prods.map(p=>{
+          const fc=p.fieldConstraints||{};
+          return `<tr>
+            <td><span class="ctag" style="font-size:10.5px">${p.code}</span><div class="xs muted">${p.desc}</div></td>
+            ${otherF.map(f=>{
+              const allowed=fc[f.id]??f.values.map(v=>v.code);
+              if(!allowed.length) return `<td><span class="xs muted">—</span></td>`;
+              return `<td>${allowed.map(c=>`<span class="c-chip">${c}</span>`).join(' ')}</td>`;
+            }).join('')}
+          </tr>`;
+        }).join('') : `<tr><td colspan="${otherF.length+1}" class="xs muted" style="text-align:center;padding:12px">
+          Chưa có sản phẩm. <span style="color:var(--blue);cursor:pointer" onclick="guardedOpenEditGrp('${g.id}')">→ Thêm ràng buộc</span>
+        </td></tr>`}
+        </tbody>
+      </table></div></div>`;
+  });
+
+  document.getElementById('MC').innerHTML=h;
+  renderCGTable();
+}
+
+function renderCGTable(){
+  const el=document.getElementById('cg-tbl-body'); if(!el) return;
+  el.innerHTML=CG_PRODUCTS.map(p=>{
+    const vl=(p.vat_lieu||['']).map(v=>CG_DESC.vat_lieu[v]||v||'Nhôm').join(', ');
+    const opts=(p.option||[]).join(', ')||'—';
+    return `<tr>
+      <td><span class="ctag">${p.code}</span><div class="xs muted">${p.desc}</div></td>
+      <td>${p.loai_cua.map(v=>`<span class="c-chip">${v}</span>`).join(' ')}</td>
+      <td>${p.khung.map(v=>`<span class="c-chip">${v}</span>`).join(' ')}</td>
+      <td>${p.nan.map(v=>`<span class="c-chip">${v}</span>`).join(' ')}</td>
+      <td>${p.mat.map(v=>`<span class="c-chip">${v}</span>`).join(' ')}</td>
+      <td>${p.kc.map(v=>`<span class="c-chip">${p.nan_kc_fixed?'':''}${v}</span>`).join(' ')}${p.nan_kc_fixed?'<span class="xs muted" style="margin-left:4px">(ghép đôi)</span>':''}</td>
+      <td>${vl}</td>
+      <td class="xs">${opts}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════
+// UNIVERSAL CONSTRAINT EDITOR (CG + tất cả nhóm khác)
+// ─ Chip-click UI, validate vs Field Library, gợi ý thêm vào thư viện
+// ═══════════════════════════════════════════════════════════
+
+// ── Helpers ──
+// Lấy tất cả giá trị hợp lệ của 1 trường từ FIELD_LIBRARY (match theo tên hoặc fieldId)
+function getLibVals(fieldName, fieldId){
+  let fl=null;
+  if(fieldId) fl=FIELD_LIBRARY.find(x=>x.id===fieldId);
+  if(!fl) fl=FIELD_LIBRARY.find(x=>x.name===fieldName);
+  return fl ? fl.values : null;
+}
+
+// Validate 1 mảng code xem có trong thư viện không
+// Trả về {ok:bool, missing:[code], libVals:[{code,desc}]|null}
+function validateVsLib(codes, fieldName, fieldId){
+  const libVals=getLibVals(fieldName, fieldId);
+  if(!libVals) return {ok:true, missing:[], libVals:null}; // không có trong lib → không validate
+  const libCodes=new Set(libVals.map(v=>v.code));
+  const missing=codes.filter(c=>c && !libCodes.has(c));
+  return {ok:missing.length===0, missing, libVals};
+}
+
+// Render chip-row cho 1 trường với validate
+function renderConstraintField(fieldName, fieldId, currentVals, inputId, options={}){
+  const libVals=getLibVals(fieldName, fieldId);
+  const libCodes=libVals?libVals.map(v=>v.code):[];
+  const currentSet=new Set(currentVals);
+  // Các giá trị hiện tại không có trong lib
+  const extraVals=currentVals.filter(c=>c && !libCodes.includes(c));
+  const hasError=extraVals.length>0 && libVals!==null;
+
+  let h=`<div class="fr" style="margin-bottom:10px">
+    <div class="fac g6" style="margin-bottom:4px">
+      <span class="fl" style="margin-bottom:0">${fieldName}</span>
+      ${options.optional?'<span class="bdg bdg-o" style="font-size:9px">Tuỳ chọn</span>':'<span class="bdg bdg-r" style="font-size:9px">Bắt buộc</span>'}
+      ${libVals?`<span class="xs muted" style="margin-left:4px">📚 ${libVals.length} giá trị trong thư viện</span>`:'<span class="xs" style="color:var(--red);margin-left:4px" title="Trường này chưa có trong thư viện">⚠️ Chưa có trong thư viện</span>'}
+    </div>`;
+
+  if(libVals && libVals.length){
+    // Chip-click từ thư viện
+    h+=`<div class="chip-row" id="${inputId}-chips" style="margin-bottom:${hasError?'4px':'0'}">`;
+    libVals.forEach(v=>{
+      const on=currentSet.has(v.code);
+      h+=`<span class="chip ${on?'on':''}" title="${v.desc||v.code}"
+        onclick="toggleConstraintChip('${inputId}','${esc(v.code)}',this)">${v.code||'(trống)'}</span>`;
+    });
+    h+=`</div>`;
+    // Extra values not in library
+    if(extraVals.length){
+      h+=`<div class="notice nw" style="font-size:11.5px;padding:6px 10px;margin-top:4px">
+        ⚠️ Giá trị <b>${extraVals.join(', ')}</b> không có trong thư viện trường "<b>${fieldName}</b>".
+        <button class="btn btn-p btn-xs" style="margin-left:8px" onclick="addMissingToLib('${fieldName}','${fieldId||''}','${extraVals.map(v=>esc(v)).join(',')}')">＋ Thêm vào thư viện</button>
+      </div>`;
+    }
+  } else {
+    // Không có trong lib → text input fallback + cảnh báo
+    h+=`<input class="fi mono" id="${inputId}-text" value="${currentVals.join(', ')}" placeholder="Nhập giá trị, cách nhau bởi dấu phẩy"
+      oninput="syncConstraintText('${inputId}',this.value)" style="font-size:12px">`;
+    if(!libVals){
+      h+=`<div class="fhint" style="color:var(--red)">⚠️ Trường "<b>${fieldName}</b>" chưa có trong Thư viện trường. 
+        <span style="cursor:pointer;color:var(--blue);text-decoration:underline" onclick="quickAddFieldToLib('${fieldName}','${currentVals.join(',')}')">→ Thêm ngay vào thư viện</span>
+      </div>`;
+    }
+  }
+
+  // Hidden state holder
+  h+=`<input type="hidden" id="${inputId}" value="${currentVals.join(',')}">`;
+  h+=`</div>`;
+  return h;
+}
+
+// Toggle chip trong constraint editor
+function toggleConstraintChip(inputId, code, el){
+  const hidden=document.getElementById(inputId);
+  if(!hidden) return;
+  let vals=hidden.value?hidden.value.split(',').map(x=>x.trim()).filter(Boolean):[];
+  const i=vals.indexOf(code);
+  if(i>=0){vals.splice(i,1); el.classList.remove('on');}
+  else{vals.push(code); el.classList.add('on');}
+  hidden.value=vals.join(',');
+}
+
+// Sync text input vào hidden
+function syncConstraintText(inputId, val){
+  const hidden=document.getElementById(inputId);
+  if(hidden) hidden.value=val.split(',').map(x=>x.trim()).filter(Boolean).join(',');
+}
+
+// Thêm giá trị thiếu vào thư viện
+function addMissingToLib(fieldName, fieldId, codesStr){
+  const codes=codesStr.split(',').map(x=>x.trim()).filter(Boolean);
+  let fl=fieldId?FIELD_LIBRARY.find(x=>x.id===fieldId):FIELD_LIBRARY.find(x=>x.name===fieldName);
+  if(!fl){
+    // Tạo mới
+    fl={id:'fl_'+fieldName.toLowerCase().replace(/[^a-z0-9]/g,'_')+'_'+Date.now().toString().slice(-4),name:fieldName,desc:'',values:[]};
+    FIELD_LIBRARY.push(fl);
+  }
+  codes.forEach(c=>{if(!fl.values.find(v=>v.code===c)) fl.values.push({code:c,desc:'',note:''});});
+  alert(`✅ Đã thêm ${codes.join(', ')} vào thư viện trường "${fieldName}". Vào Thư viện trường để thêm mô tả.`);
+  // Re-render current modal
+  if(document.getElementById('m-editcg')?.classList.contains('open')) openEditCG();
+  else if(document.getElementById('m-editgrp')?.classList.contains('open')) openEditGrp(_editGrpId);
+}
+
+// Quick add field to library
+function quickAddFieldToLib(fieldName, codesStr){
+  const codes=codesStr.split(',').map(x=>x.trim()).filter(Boolean);
+  const id='fl_'+fieldName.toLowerCase().replace(/[^a-z0-9]/g,'_')+'_'+Date.now().toString().slice(-4);
+  FIELD_LIBRARY.push({id,name:fieldName,desc:'',values:codes.map(c=>({code:c,desc:'',note:''}))});
+  alert(`✅ Đã thêm trường "${fieldName}" (${codes.length} giá trị) vào thư viện. Vào Thư viện trường để bổ sung mô tả.`);
+  if(document.getElementById('m-editcg')?.classList.contains('open')) openEditCG();
+  else if(document.getElementById('m-editgrp')?.classList.contains('open')) openEditGrp(_editGrpId);
+}
+
+// ── EDIT CG (chip UI) ──
+function openEditCG(){
+  injectEditCGModal();
+  let h='';
+  CG_PRODUCTS.forEach((p,pi)=>{
+    h+=`<div style="border:1px solid var(--bd);border-radius:var(--rs);margin-bottom:12px">
+      <div style="padding:7px 12px;background:var(--s2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px">
+        <span class="ctag">${p.code}</span><span class="sm fw6">${p.desc}</span>
+        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11.5px;cursor:pointer">
+          <input type="checkbox" id="cgp-${pi}-fixed" ${p.nan_kc_fixed?'checked':''} style="accent-color:var(--blue)">
+          <span>Nan↔KC ghép đôi (SLD, SRAG)</span>
+        </label>
+      </div>
+      <div style="padding:10px 12px;display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        ${renderConstraintField('Loại cửa','fl_loai_cua',p.loai_cua||[],`cgp-${pi}-loai_cua`)}
+        ${renderConstraintField('Loại khung','fl_khung',p.khung||[],`cgp-${pi}-khung`)}
+        ${renderConstraintField('Loại nan (pos4)','fl_nan_pos4',p.nan||[],`cgp-${pi}-nan`)}
+        ${renderConstraintField('Mặt viền (pos5a)','fl_mat_vien',p.mat||[],`cgp-${pi}-mat`)}
+        ${renderConstraintField('KC nan (pos5b)','fl_kc_nan',p.kc||[],`cgp-${pi}-kc`)}
+        ${renderConstraintField('Vật liệu','fl_vat_lieu',(p.vat_lieu||['']).filter(v=>v),`cgp-${pi}-vl`,{optional:true})}
+        <div style="grid-column:1/-1">${renderConstraintField('Option (cửa gió)','fl_option_cg',p.option||[],`cgp-${pi}-opt`,{optional:true})}</div>
+      </div></div>`;
+  });
+  document.getElementById('editcg-body').innerHTML=h;
+  OM('m-editcg');
+}
+
+function doSaveCG(){
+  CG_PRODUCTS.forEach((p,pi)=>{
+    const getV=id=>{const el=document.getElementById(id);return el?el.value.split(',').map(x=>x.trim()).filter(Boolean):[];};
+    p.loai_cua=getV(`cgp-${pi}-loai_cua`);
+    p.khung=getV(`cgp-${pi}-khung`);
+    p.nan=getV(`cgp-${pi}-nan`);
+    p.mat=getV(`cgp-${pi}-mat`);
+    p.kc=getV(`cgp-${pi}-kc`);
+    const vl=getV(`cgp-${pi}-vl`); p.vat_lieu=vl.length?[''].concat(vl):[''];
+    p.option=getV(`cgp-${pi}-opt`);
+    const fx=document.getElementById(`cgp-${pi}-fixed`);
+    p.nan_kc_fixed=fx?fx.checked:false;
+  });
+  CM('m-editcg');
+  if(S.view==='dashboard') renderDashboard(); else if(S.view==='group'&&S.gid==='CG') renderGrp('CG');
+  saveToDB('cg_products');
+}
+
+function injectEditCGModal(){
+  if(document.getElementById('m-editcg')) return;
+  const d=document.createElement('div');
+  d.className='mbg'; d.id='m-editcg';
+  d.innerHTML=`<div class="mbox mlg" style="max-width:900px">
+    <div class="mhd"><span class="mttl">Sửa ràng buộc sản phẩm [CG]</span><button class="mcl" onclick="CM('m-editcg')">×</button></div>
+    <div class="mbody" id="editcg-body" style="max-height:74vh;overflow-y:auto"></div>
+    <div class="mft">
+      <span class="xs muted f1">Chip xanh = giá trị được phép. Giá trị phải có trong Thư viện trường.</span>
+      <button class="btn btn-o" onclick="CM('m-editcg')">Huỷ</button>
+      <button class="btn btn-p" onclick="doSaveCG()">💾 Lưu tất cả</button>
+    </div></div>`;
+  document.body.appendChild(d);
+  d.addEventListener('click',e=>{if(e.target===d)d.classList.remove('open');});
+}
+
+// ── EDIT GENERIC GROUP CONSTRAINTS – per product, giống CG ──
+let _editGrpId=null;
+
+function openEditGrp(gid){
+  _editGrpId=gid;
+  injectEditGrpModal();
+  const g=GROUPS.find(x=>x.id===gid);
+  const prods=GRP_PRODUCTS[gid]||[];
+  document.getElementById('editgrp-ttl').textContent=`Sửa ràng buộc [${gid}] ${g.name}`;
+
+  if(!prods.length){
+    document.getElementById('editgrp-body').innerHTML=`<div class="notice nw">⚠️ Nhóm [${gid}] chưa có sản phẩm nào trong GRP_PRODUCTS.</div>`;
+    OM('m-editgrp'); return;
+  }
+
+  const otherFields=g.fields.slice(1); // bỏ field đầu (mã nhóm)
+  let h='';
+  prods.forEach((p,pi)=>{
+    h+=`<div style="border:1px solid var(--bd);border-radius:var(--rs);margin-bottom:12px">
+      <div style="padding:7px 12px;background:var(--s2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px">
+        <span class="ctag">${p.code}</span>
+        <span class="sm fw6">${p.desc}</span>
+      </div>
+      <div style="padding:10px 12px;display:grid;grid-template-columns:1fr 1fr;gap:6px">`;
+    otherFields.forEach(f=>{
+      const cur=(p.fieldConstraints||{})[f.id]||f.values.map(v=>v.code);
+      // Dùng renderConstraintField – chip từ field.values
+      h+=renderConstraintFieldFromValues(f.name, f.values, cur, `egrp-${pi}-${f.id}`, {optional:f.type==='optional'});
+    });
+    h+=`</div></div>`;
+  });
+
+  document.getElementById('editgrp-body').innerHTML=h;
+  OM('m-editgrp');
+}
+
+// Render chip từ danh sách values trực tiếp (không cần FIELD_LIBRARY)
+function renderConstraintFieldFromValues(fieldName, allValues, currentVals, inputId, options={}){
+  const currentSet=new Set(currentVals);
+  let h=`<div class="fr" style="margin-bottom:8px">
+    <div class="fac g6" style="margin-bottom:4px">
+      <span class="fl" style="margin-bottom:0;font-size:11px">${fieldName}</span>
+      ${options.optional?'<span class="bdg bdg-o" style="font-size:9px">Tuỳ chọn</span>':'<span class="bdg bdg-r" style="font-size:9px">Bắt buộc</span>'}
+      <span class="xs muted">${currentVals.length}/${allValues.length}</span>
+    </div>`;
+
+  if(allValues.length){
+    h+=`<div class="chip-row">`;
+    allValues.forEach(v=>{
+      const on=currentSet.has(v.code);
+      h+=`<span class="chip ${on?'on':''}" title="${v.desc||v.code}"
+        onclick="toggleConstraintChip('${inputId}','${esc(v.code)}',this)">${v.code||'(trống)'}</span>`;
+    });
+    h+=`</div>`;
+  } else {
+    // Không có values (trường tuỳ chọn không cần) → thông báo
+    h+=`<div class="xs muted" style="padding:4px 0">Trường này không có giá trị cố định – bỏ qua ràng buộc</div>`;
+  }
+
+  h+=`<input type="hidden" id="${inputId}" value="${currentVals.join(',')}">`;
+  h+=`</div>`;
+  return h;
+}
+
+function doSaveGrp(){
+  const g=GROUPS.find(x=>x.id===_editGrpId);
+  const prods=GRP_PRODUCTS[_editGrpId]||[];
+  const otherFields=g.fields.slice(1);
+  prods.forEach((p,pi)=>{
+    if(!p.fieldConstraints) p.fieldConstraints={};
+    otherFields.forEach(f=>{
+      const el=document.getElementById(`egrp-${pi}-${f.id}`);
+      if(el) p.fieldConstraints[f.id]=el.value.split(',').map(x=>x.trim()).filter(Boolean);
+    });
+  });
+  CM('m-editgrp');
+  if(S.view==='dashboard') renderDashboard(); else if(S.view==='group'&&S.gid===_editGrpId) renderGrp(_editGrpId);
+  saveToDB('grp_products');
+  alert(`✅ Đã lưu ràng buộc cho ${prods.length} sản phẩm [${_editGrpId}]`);
+}
+
+function injectEditGrpModal(){
+  if(document.getElementById('m-editgrp')) return;
+  const d=document.createElement('div');
+  d.className='mbg'; d.id='m-editgrp';
+  d.innerHTML=`<div class="mbox mlg" style="max-width:860px">
+    <div class="mhd"><span class="mttl" id="editgrp-ttl">Sửa ràng buộc nhóm</span><button class="mcl" onclick="CM('m-editgrp')">×</button></div>
+    <div class="mbody" id="editgrp-body" style="max-height:74vh;overflow-y:auto"></div>
+    <div class="mft">
+      <span class="xs muted f1">Chip xanh = giá trị được phép. ⚠️ = giá trị chưa có trong Thư viện trường.</span>
+      <button class="btn btn-o" onclick="CM('m-editgrp')">Huỷ</button>
+      <button class="btn btn-p" onclick="doSaveGrp()">💾 Lưu ràng buộc</button>
+    </div></div>`;
+  document.body.appendChild(d);
+  d.addEventListener('click',e=>{if(e.target===d)d.classList.remove('open');});
+}
+
+// ═══════════════════════════════════════════════════════════
+// FORMAT EDITOR
+// ═══════════════════════════════════════════════════════════
+function openFmt(gid){
+  const g=GROUPS.find(x=>x.id===gid);
+  document.getElementById('fmt-gid').value=gid;
+  document.getElementById('fmt-ttl').textContent='Sửa format mã – ['+gid+']';
+  document.getElementById('fmt-val').value=g.format;
+  document.getElementById('fmt-ex').value=g.example;
+  OM('m-fmt');
+}
+function doSaveFmt(){
+  const gid=document.getElementById('fmt-gid').value;
+  const g=GROUPS.find(x=>x.id===gid);
+  g.format=document.getElementById('fmt-val').value.trim();
+  g.example=document.getElementById('fmt-ex').value.trim();
+  CM('m-fmt');
+  if(S.view==='dashboard') renderDashboard();
+  else if(S.view==='group'&&S.gid===gid) renderGrp(gid);
+}
+
+// ═══════════════════════════════════════════════════════════
+// GROUP VIEW
+// ═══════════════════════════════════════════════════════════
+function renderGrp(gid){
+  const g=GROUPS.find(x=>x.id===gid);
+  let h=`<div class="fmt" onclick="openFmt('${gid}')"><span class="fmt-l">Format mã</span><span class="fmt-v">${g.format}</span><span class="fmt-edit">✏ Sửa</span></div>
+  <div class="fac g8 mb8">
+    <div class="xs muted f1">Ví dụ: <b class="mono">${g.example}</b></div>
+    ${g.type!=='CG'?`<button class="btn btn-o btn-sm" onclick="guardedOpenEditGrp('${gid}')">✏ Sửa ràng buộc</button><button class="btn btn-o btn-sm" onclick="guardedOpenAddFld('${gid}')">＋ Thêm trường</button>`:''}
+    ${g.type==='CG'?`<button class="btn btn-p btn-sm" onclick="guardedOpenEditCG()">✏ Sửa ràng buộc CG</button>`:''}
+  </div>`;
+
+  if(g.type==='CG'){
+    // ── CG: bảng per-product có nút sửa/thêm/xoá ──
+    h+=`<div class="card">
+      <div class="card-h">
+        <span class="card-t">Ràng buộc sản phẩm [CG] – ${CG_PRODUCTS.length} sản phẩm</span>
+        <span class="xs muted">Mỗi sản phẩm có ràng buộc riêng</span>
+        <button class="btn btn-p btn-xs" onclick="guardedOpenAddProd('CG')">＋ Thêm sản phẩm</button>
+      </div>
+      <div style="overflow-x:auto"><table class="dt">
+        <thead><tr>
+          <th style="min-width:140px">Sản phẩm</th>
+          <th>Loại cửa</th><th>Khung</th><th>Nan (pos4)</th>
+          <th>Mặt (pos5a)</th><th>KC (pos5b)</th><th>Vật liệu</th><th>Option</th>
+          <th style="width:70px;text-align:center">Thao tác</th>
+        </tr></thead>
+        <tbody>${CG_PRODUCTS.map((p,pi)=>{
+          const vl=(p.vat_lieu||['']).map(v=>v||'Nhôm').join(', ');
+          return `<tr>
+            <td>
+              <span class="ctag" style="cursor:pointer" onclick="guardedOpenEditProd('CG',${pi})" title="Click để sửa">${p.code}</span>
+              <div class="xs muted" style="margin-top:1px">${p.desc}</div>
+            </td>
+            <td>${p.loai_cua.map(v=>`<span class="c-chip">${v}</span>`).join(' ')}</td>
+            <td>${p.khung.join(', ')}</td>
+            <td>${p.nan.join(', ')}</td>
+            <td>${p.mat.join(', ')}</td>
+            <td>${p.kc.join(', ')}${p.nan_kc_fixed?' <span class="xs muted">(ghép đôi)</span>':''}</td>
+            <td>${vl}</td>
+            <td class="xs">${(p.option||[]).join(', ')||'—'}</td>
+            <td style="text-align:center;white-space:nowrap">
+              <button class="ib" onclick="guardedOpenEditProd('CG',${pi})" title="Sửa tên/mã">✏</button>
+              <button class="ib del" onclick="guardedDelProd('CG',${pi})" title="Xoá">✕</button>
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>
+    </div>`;
+
+    // Bảng định nghĩa giá trị CG
+    const cgFieldDefs=[
+      {name:'Loại cửa',vals:Object.entries(CG_DESC.loai_cua).map(([k,v])=>({code:k,desc:v}))},
+      {name:'Loại khung',vals:Object.entries(CG_DESC.khung).map(([k,v])=>({code:k,desc:v}))},
+      {name:'Loại nan',vals:Object.entries(CG_DESC.nan).map(([k,v])=>({code:k,desc:v}))},
+      {name:'Mặt viền',vals:Object.entries(CG_DESC.mat).map(([k,v])=>({code:k,desc:v}))},
+      {name:'KC nan',vals:Object.entries(CG_DESC.kc).map(([k,v])=>({code:k,desc:v}))},
+      {name:'Vật liệu',vals:Object.entries(CG_DESC.vat_lieu).map(([k,v])=>({code:k||'(trống)',desc:v}))},
+      {name:'Option',vals:Object.entries(CG_DESC.option).map(([k,v])=>({code:k,desc:v}))},
+    ];
+    h+=`<div class="card" style="margin-top:10px">
+      <div class="card-h"><span class="card-t">📖 Bảng định nghĩa giá trị [CG]</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;padding:12px 14px">`;
+    cgFieldDefs.forEach(fd=>{
+      h+=`<div style="border:1px solid var(--bd);border-radius:var(--rs);overflow:hidden">
+        <div style="padding:5px 10px;background:var(--s2);border-bottom:1px solid var(--bd)">
+          <span class="fw6 xs">${fd.name}</span>
+        </div>
+        <table class="dt" style="font-size:11px">
+          <thead><tr><th>Mã</th><th>Ý nghĩa</th></tr></thead>
+          <tbody>${fd.vals.map(v=>`<tr>
+            <td><span class="ctag" style="font-size:10px">${v.code}</span></td>
+            <td class="muted">${v.desc}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>`;
+    });
+    h+=`</div></div>`;
+
+  } else if(GRP_PRODUCTS[gid]&&GRP_PRODUCTS[gid].length){
+    // ── Non-CG có GRP_PRODUCTS: bảng per-product ──
+    const prods=GRP_PRODUCTS[gid];
+    const otherF=g.fields.slice(1);
+
+    h+=`<div class="card">
+      <div class="card-h">
+        <span class="card-t">Ràng buộc sản phẩm [${gid}] – ${prods.length} sản phẩm</span>
+        <span class="xs muted">Mỗi sản phẩm có ràng buộc riêng</span>
+        <button class="btn btn-p btn-xs" onclick="guardedOpenAddProd('${gid}')">＋ Thêm sản phẩm</button>
+      </div>
+      <div style="overflow-x:auto"><table class="dt">
+        <thead><tr>
+          <th style="min-width:130px">Sản phẩm</th>
+          ${otherF.map(f=>`<th style="white-space:nowrap">${f.name}${f.type==='optional'?'<span class="bdg bdg-o" style="font-size:8px;margin-left:3px">opt</span>':''}</th>`).join('')}
+          <th style="width:70px;text-align:center">Thao tác</th>
+        </tr></thead>
+        <tbody>${prods.map((p,pi)=>{
+          const fc=p.fieldConstraints||{};
+          return `<tr>
+            <td>
+              <span class="ctag" style="font-size:10.5px;cursor:pointer" onclick="guardedOpenEditProd('${gid}',${pi})" title="Click để sửa">${p.code}</span>
+              <div class="xs muted" style="margin-top:1px">${p.desc}</div>
+            </td>
+            ${otherF.map(f=>{
+              const allowed=fc[f.id]??f.values.map(v=>v.code);
+              if(!allowed.length) return `<td><span class="xs muted">—</span></td>`;
+              return `<td>${allowed.map(c=>`<span class="c-chip">${c}</span>`).join(' ')}</td>`;
+            }).join('')}
+            <td style="text-align:center;white-space:nowrap">
+              <button class="ib" onclick="guardedOpenEditProd('${gid}',${pi})" title="Sửa tên/mã">✏</button>
+              <button class="ib del" onclick="guardedDelProd('${gid}',${pi})" title="Xoá">✕</button>
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>
+    </div>`;
+
+    // ── Bảng định nghĩa giá trị ──
+    h+=`<div class="card" style="margin-top:10px">
+      <div class="card-h"><span class="card-t">📖 Bảng định nghĩa giá trị</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;padding:12px 14px">`;
+    otherF.forEach(f=>{
+      const bl=f.type==='required'?'<span class="bdg bdg-r" style="font-size:9px">Bắt buộc</span>':'<span class="bdg bdg-o" style="font-size:9px">Tuỳ chọn</span>';
+      h+=`<div style="border:1px solid var(--bd);border-radius:var(--rs);overflow:hidden">
+        <div style="padding:5px 10px;background:var(--s2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:6px">
+          <span class="fw6 xs">${f.name}</span>${bl}
+          <button class="btn btn-o btn-xs" style="margin-left:auto" onclick="openAddVal('${gid}','${f.id}')">＋</button>
+          <button class="ib" onclick="editFldNm('${gid}','${f.id}')">✏</button>
+          <button class="ib del" onclick="delFld('${gid}','${f.id}')">🗑</button>
+        </div>
+        <table class="dt" style="font-size:11px">
+          <thead><tr><th>Mã</th><th>Ý nghĩa</th><th style="width:44px;text-align:center">Sửa</th></tr></thead>
+          <tbody>${f.values.map((v,vi)=>`<tr>
+            <td><span class="ctag" style="font-size:10px">${v.code||'—'}</span></td>
+            <td class="muted">${v.desc||''}</td>
+            <td style="text-align:center">
+              <button class="ib" onclick="openEditVal('${gid}','${f.id}',${vi})">✏</button>
+              <button class="ib del" onclick="delVal('${gid}','${f.id}',${vi})">✕</button>
+            </td></tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    });
+    h+=`</div></div>`;
+
+  } else {
+    // ── Nhóm generic chưa có GRP_PRODUCTS: hiện field list như cũ ──
+    g.fields.forEach(f=>{
+      const bl=f.type==='required'?'<span class="bdg bdg-r">Bắt buộc</span>':'<span class="bdg bdg-o">Tuỳ chọn</span>';
+      h+=`<div class="card">
+        <div class="card-h" style="padding:8px 12px">
+          <div class="fac g6 f1"><span style="color:var(--blue)">◆</span><span class="card-t">${f.name}</span>${bl}</div>
+          <button class="btn btn-o btn-xs" onclick="openAddVal('${gid}','${f.id}')">＋</button>
+          <button class="ib" onclick="editFldNm('${gid}','${f.id}')">✏</button>
+          <button class="ib del" onclick="delFld('${gid}','${f.id}')">🗑</button>
+        </div>
+        <div style="overflow-x:auto"><table class="dt">
+          <thead><tr><th style="width:110px">Mã ký hiệu</th><th>Ý nghĩa / Mô tả</th><th>Ghi chú</th><th style="width:70px;text-align:center">Thao tác</th></tr></thead>
+          <tbody>${f.values.map((v,vi)=>`<tr>
+            <td><span class="ctag">${v.code||'—'}</span></td>
+            <td>${v.desc||''}</td><td class="xs muted">${v.note||''}</td>
+            <td style="text-align:center">
+              <button class="ib" onclick="openEditVal('${gid}','${f.id}',${vi})">✏</button>
+              <button class="ib del" onclick="delVal('${gid}','${f.id}',${vi})">✕</button>
+            </td></tr>`).join('')}
+          </tbody></table></div></div>`;
+    });
+  }
+
+  document.getElementById('MC').innerHTML=h;
+  injectEditCGModal();
+}
+
+// ═══════════════════════════════════════════════════════════
+// COMBO GENERATOR
+// ═══════════════════════════════════════════════════════════
+function renderCombo(){
+  setPath([{l:'Tạo tổ hợp mã tự động',b:true}]);
+  GROUPS.forEach(g=>{ if(!S.opts[g.id]){ S.opts[g.id]={};
+    g.fields.forEach(f=>{ S.opts[g.id][f.id]=f.type==='required'?f.values.map(v=>v.code):[]; });
+  }});
+
+  let h=`<div class="combo-wrap">
+  <div class="prod-panel">
+    <div class="prod-ph"><span class="t">📦 Chọn sản phẩm</span>
+      <button class="btn btn-o btn-xs" onclick="selAll(true)">☑ Tất cả</button>
+      <button class="btn btn-o btn-xs" onclick="selAll(false)">☐</button>
+    </div>
+    <div class="prod-list" id="pList">`;
+
+  GROUPS.forEach(g=>{
+    const prods=g.type==='CG'?CG_PRODUCTS:(GRP_PRODUCTS[g.id]||g.fields[0]?.values.map(v=>({code:v.code,desc:v.desc}))||[]);
+    h+=`<div class="grp-hdr" onclick="togGrp('${g.id}')">
+      <input type="checkbox" id="gc-${g.id}" onclick="event.stopPropagation();setGrp('${g.id}',this.checked)" style="cursor:pointer;accent-color:var(--blue)">
+      <span class="f1">[${g.id}] ${g.name}</span><span style="font-size:9px;color:var(--t4)">${prods.length}</span></div>`;
+    prods.forEach(p=>{
+      h+=`<label class="prod-row" id="pr-${g.id}-${p.code.replace(/[^a-z0-9]/gi,'_')}">
+        <input type="checkbox" class="pchk" data-gid="${g.id}" data-code="${p.code.replace(/"/g,'&quot;')}" onchange="onPchk()">
+        <div><div class="mono fw6" style="font-size:11px;color:var(--blue)">${p.code}</div>
+          <div style="font-size:10.5px;color:var(--t2);line-height:1.3">${p.desc||''}</div></div></label>`;
+    });
+  });
+
+  h+=`</div>
+    <div class="prod-pf">Đã chọn: <b id="sCnt">0</b> sản phẩm</div>
+  </div>
+  <div class="rp" id="rightPanel">
+    <div style="text-align:center;padding:80px 20px;color:var(--t4)">
+      <div style="font-size:36px;margin-bottom:8px">☑</div>
+      <div>Tích chọn sản phẩm bên trái</div>
+    </div>
+  </div></div>`;
+  document.getElementById('MC').innerHTML=h;
+}
+
+function onPchk(){
+  const cnt=document.querySelectorAll('.pchk:checked').length;
+  const el=document.getElementById('sCnt'); if(el) el.textContent=cnt;
+  GROUPS.forEach(g=>{
+    const all=document.querySelectorAll(`.pchk[data-gid="${g.id}"]`);
+    const chk=document.querySelectorAll(`.pchk[data-gid="${g.id}"]:checked`);
+    const gc=document.getElementById('gc-'+g.id); if(!gc) return;
+    gc.checked=chk.length===all.length&&all.length>0;
+    gc.indeterminate=chk.length>0&&chk.length<all.length;
+  });
+  buildRight();
+}
+function togGrp(gid){
+  const all=document.querySelectorAll(`.pchk[data-gid="${gid}"]`);
+  const chk=document.querySelectorAll(`.pchk[data-gid="${gid}"]:checked`);
+  const val=chk.length<all.length;
+  all.forEach(c=>c.checked=val);
+  const gc=document.getElementById('gc-'+gid); if(gc){gc.checked=val;gc.indeterminate=false;}
+  onPchk();
+}
+function setGrp(gid,val){ document.querySelectorAll(`.pchk[data-gid="${gid}"]`).forEach(c=>c.checked=val); onPchk(); }
+function selAll(val){ document.querySelectorAll('.pchk').forEach(c=>c.checked=val);
+  GROUPS.forEach(g=>{const gc=document.getElementById('gc-'+g.id);if(gc){gc.checked=val;gc.indeterminate=false;}});
+  onPchk();
+}
+
+function buildRight(){
+  const sel=[]; document.querySelectorAll('.pchk:checked').forEach(c=>sel.push({gid:c.dataset.gid,code:c.dataset.code}));
+  const rp=document.getElementById('rightPanel'); if(!rp) return;
+  if(!sel.length){ rp.innerHTML=`<div style="text-align:center;padding:80px 20px;color:var(--t4)"><div style="font-size:36px;margin-bottom:8px">☑</div><div>Tích chọn sản phẩm bên trái</div></div>`; return; }
+  const byG={}; sel.forEach(s=>{if(!byG[s.gid])byG[s.gid]=[];byG[s.gid].push(s.code);});
+  let h='';
+  Object.entries(byG).forEach(([gid,codes])=>{
+    const g=GROUPS.find(x=>x.id===gid);
+    if(g.type==='CG'){
+      h+=buildCGConfig(codes);
+    } else {
+      h+=buildGenConfig(gid,codes);
+    }
+  });
+  rp.innerHTML=h;
+}
+
+function buildCGConfig(codes){
+  const cgProds=CG_PRODUCTS.filter(p=>codes.includes(p.code));
+  let est=0; cgProds.forEach(p=>{
+    const nc=p.loai_cua.length,nk=p.khung.length,nn=p.nan.length,nm=p.mat.length,nkc=p.kc.length;
+    const nvl=(p.vat_lieu||['']).length, nopt=(p.option||[]).length+1;
+    const nkc_eff=p.nan_kc_fixed?Math.min(nn,nkc):nn*nkc;
+    est+=nc*nk*nkc_eff*nm*nvl*nopt;
+  });
+  return `<div class="card mb12">
+    <div class="card-h" style="padding:8px 12px">
+      <div class="f1">
+        <div class="card-t">[CG] Cửa gió / Miệng gió</div>
+        <div class="xs muted" style="margin-top:2px">${cgProds.map(p=>`<span class="ctag" style="margin-right:3px;font-size:10px">${p.code}</span>`).join('')}</div>
+      </div>
+      <span class="xs muted" id="est-CG">~${est.toLocaleString()} mã</span>
+      <button class="btn btn-n" style="margin-left:8px" onclick="genCG()">⚡ Tạo mã CG</button>
+      <button class="btn btn-g btn-sm" onclick="doExpGrp('CG')">↓ Excel</button>
+    </div>
+    <div style="padding:8px 12px">
+      <div class="notice ni" style="margin-bottom:0;font-size:11.5px">ℹ️ Mỗi sản phẩm tự ghép theo ràng buộc riêng. Format: <span class="mono">TÊN/[VL/]LOAI_CUA/KHUNG/NAN/MAT+KC[+OPTION]</span></div>
+    </div>
+  </div>
+  <div id="res-CG"></div>`;
+}
+
+function buildGenConfig(gid,codes){
+  const g=GROUPS.find(x=>x.id===gid);
+  const grpProds=GRP_PRODUCTS[gid]||[];
+  const otherF=g.fields.slice(1);
+
+  // Ước tính mã dựa trên per-product constraints
+  let est=0;
+  codes.forEach(pc=>{
+    const prod=grpProds.find(x=>x.code===pc);
+    let e=1;
+    otherF.forEach(f=>{
+      const allowed=prod?(prod.fieldConstraints||{})[f.id]??f.values.map(v=>v.code):f.values.map(v=>v.code);
+      const n=allowed.length;
+      e*=f.type==='required'?Math.max(n,1):(n+1);
+    });
+    est+=e;
+  });
+
+  let h=`<div class="card mb12">
+    <div class="card-h" style="padding:8px 12px">
+      <div class="f1">
+        <div class="card-t">[${gid}] ${g.name}</div>
+        <div class="xs muted" style="margin-top:2px">${codes.map(c=>`<span class="ctag" style="margin-right:3px;font-size:10px">${c}</span>`).join('')}</div>
+      </div>
+      <span class="xs muted" id="est-${gid}">~${est.toLocaleString()} mã</span>
+      <button class="btn btn-o btn-xs" style="margin-left:8px" onclick="guardedOpenEditGrp('${gid}')">✏ Sửa ràng buộc</button>
+    </div>`;
+
+  // Hiển thị ràng buộc từng sản phẩm đã chọn
+  h+=`<div style="padding:8px 12px">
+    <div class="notice ni" style="margin-bottom:8px;font-size:11.5px">ℹ️ Mỗi sản phẩm dùng ràng buộc riêng. Format: <span class="mono">${g.format}</span></div>`;
+
+  codes.forEach(pc=>{
+    const prod=grpProds.find(x=>x.code===pc);
+    if(!prod){h+=`<div class="xs muted" style="padding:4px 0">⚠️ ${pc}: chưa có cấu hình riêng – dùng toàn bộ giá trị của nhóm</div>`;return;}
+    h+=`<div style="border:1px solid var(--bd);border-radius:var(--rs);margin-bottom:8px;overflow:hidden">
+      <div style="padding:5px 10px;background:var(--s2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:6px">
+        <span class="ctag" style="font-size:10.5px">${pc}</span>
+        <span class="xs muted">${prod.desc}</span>
+      </div>
+      <div style="padding:6px 10px;display:flex;flex-wrap:wrap;gap:6px">`;
+    otherF.forEach(f=>{
+      const allowed=(prod.fieldConstraints||{})[f.id]??f.values.map(v=>v.code);
+      if(!allowed.length&&f.type==='optional') return; // skip empty optional
+      h+=`<div style="display:inline-flex;align-items:center;gap:4px;background:var(--s2);border:1px solid var(--bd);border-radius:var(--rs);padding:2px 8px">
+        <span class="xs fw6" style="color:var(--t3)">${f.name}:</span>
+        ${allowed.length?allowed.map(c=>`<span class="ctag" style="font-size:10px">${c}</span>`).join('')
+          :'<span class="xs muted">(không giới hạn)</span>'}
+      </div>`;
+    });
+    h+=`</div></div>`;
+  });
+
+  h+=`</div>
+    <div style="padding:8px 12px;border-top:1px solid var(--bd);background:var(--s2);display:flex;align-items:center;gap:8px;border-radius:0 0 var(--r) var(--r)">
+      <div class="f1"></div>
+      <button class="btn btn-n" onclick="genGen('${gid}')">⚡ Tạo mã [${gid}]</button>
+      <button class="btn btn-g btn-sm" onclick="doExpGrp('${gid}')">↓ Excel</button>
+    </div></div>
+  <div id="res-${gid}"></div>`;
+  return h;
+}
+
+function tchip(gid,fid,code,el){
+  const arr=S.opts[gid][fid]||[]; const i=arr.indexOf(code);
+  if(i>=0){arr.splice(i,1);el.classList.remove('on');}else{arr.push(code);el.classList.add('on');}
+  S.opts[gid][fid]=arr;
+  const sc=document.getElementById('sc-'+gid+'-'+fid); if(sc) sc.textContent=arr.length;
+  updEst(gid);
+}
+function csG(gid,on){
+  const g=GROUPS.find(x=>x.id===gid);
+  g.fields.slice(1).forEach(f=>{
+    if(f.type==='optional'||on) S.opts[gid][f.id]=on?f.values.map(v=>v.code):[];
+    document.querySelectorAll(`#cr-${gid}-${f.id} .chip`).forEach(c=>{
+      const inS=(S.opts[gid][f.id]||[]).includes(c.textContent);
+      inS?c.classList.add('on'):c.classList.remove('on');
+    });
+    const sc=document.getElementById('sc-'+gid+'-'+f.id); if(sc) sc.textContent=(S.opts[gid][f.id]||[]).length;
+  });
+  updEst(gid);
+}
+function updEst(gid){
+  const g=GROUPS.find(x=>x.id===gid);
+  const codes=Array.from(document.querySelectorAll(`.pchk[data-gid="${gid}"]:checked`)).map(c=>c.dataset.code);
+  let est=0;
+  const grpProds=GRP_PRODUCTS[gid]||[];
+  codes.forEach(pc=>{
+    const prod=grpProds.find(x=>x.code===pc);
+    let e=1;
+    g.fields.slice(1).forEach(f=>{
+      const allowed=prod?(prod.fieldConstraints||{})[f.id]??f.values.map(v=>v.code):f.values.map(v=>v.code);
+      const n=allowed.length;
+      e*=f.type==='required'?Math.max(n,1):(n+1);
+    });
+    est+=e;
+  });
+  const el=document.getElementById('est-'+gid); if(el) el.textContent='~'+est.toLocaleString()+' mã';
+}
+
+function cart(arrays){ if(!arrays.length)return[[]]; const[first,...rest]=arrays,rc=cart(rest); return first.flatMap(x=>rc.map(c=>[x,...c])); }
+
+// ── Generate CG: TÊN/[VL/]LOAI_CUA/KHUNG/NAN/MAT+KC[+OPTION] ──
+function genCG(){
+  const codes=Array.from(document.querySelectorAll('.pchk[data-gid="CG"]:checked')).map(c=>c.dataset.code);
+  const results=[]; const seen=new Set();
+
+  codes.forEach(pc=>{
+    const p=CG_PRODUCTS.find(x=>x.code===pc); if(!p) return;
+    const vlList=p.vat_lieu||[''];
+    const optList=['', ...(p.option||[])];
+
+    // Nan+KC pairs
+    let nkPairs;
+    if(p.nan_kc_fixed){
+      nkPairs=p.nan.map((n,i)=>[n, p.kc[i]||p.kc[0]]);
+    } else {
+      nkPairs=[]; p.nan.forEach(n=>p.kc.forEach(k=>nkPairs.push([n,k])));
+    }
+
+    p.loai_cua.forEach(lc=>{ p.khung.forEach(kh=>{ p.mat.forEach(mt=>{ nkPairs.forEach(([nan,kc])=>{ vlList.forEach(vl=>{ optList.forEach(opt=>{
+      // Build code: TÊN/[VL/]LOAI_CUA/KHUNG/NAN/MAT+KC[+OPT]
+      const parts=[pc]; if(vl) parts.push(vl);
+      parts.push(lc,kh,nan,mt+kc);
+      let code=parts.join('/'); if(opt) code+=opt;
+      if(seen.has(code)) return; seen.add(code);
+
+      // Build full name
+      const nArr=[p.desc, CG_DESC.loai_cua[lc]||lc, 'Khung '+CG_DESC.khung[kh], CG_DESC.nan[nan]||'Nan '+nan, CG_DESC.mat[mt]||'Mặt '+mt+'mm', CG_DESC.kc[kc]||'KC '+kc+'mm'];
+      if(vl) nArr.push(CG_DESC.vat_lieu[vl]||vl);
+      if(opt) nArr.push(CG_DESC.option[opt]||opt);
+
+      results.push({code, fullName:nArr.join(' – '), groupId:'CG', groupName:'Cửa gió / Miệng gió', prodCode:pc,
+        cols:{'Tên cửa':pc,'Vật liệu':vl||'Nhôm','Loại cửa':lc,'Loại khung':kh,'Loại nan':nan,'Mặt viền':mt,'KC nan':kc,'Option':opt||''},
+        createdAt:new Date().toLocaleString('vi')});
+    }); }); }); }); }); });
+  });
+
+  S.codes=S.codes.filter(c=>!(c.groupId==='CG'&&codes.includes(c.prodCode)));
+  S.codes.push(...results); renderSb(); saveToDB('codes');
+  showRes('CG',results,['Tên cửa','Vật liệu','Loại cửa','Loại khung','Loại nan','Mặt viền','KC nan','Option']);
+}
+
+// ── Generate Generic – dùng per-product fieldConstraints từ GRP_PRODUCTS ──
+function genGen(gid){
+  const g=GROUPS.find(x=>x.id===gid);
+  const codes=Array.from(document.querySelectorAll(`.pchk[data-gid="${gid}"]:checked`)).map(c=>c.dataset.code);
+  if(!codes.length){alert('Chọn ít nhất 1 sản phẩm.');return;}
+  const grpProds=GRP_PRODUCTS[gid]||[];
+  const VAN_TRON=['RVCD-H','RVCD-T','RMD','RNRD','RPRD','RVCD-HS','RVCD-TS','RNRD-S','RPRD-S'];
+  const HS=['VCD-HS','VCD-TS','NRD-S','PRD-S','RVCD-HS','RVCD-TS','RNRD-S','RPRD-S'];
+
+  const otherF=g.fields.slice(1);
+  const results=[]; const seen=new Set();
+
+  codes.forEach(pc=>{
+    const prod=grpProds.find(x=>x.code===pc);
+    // Lấy allowed values cho từng field theo constraint của sản phẩm này
+    const fArrays=otherF.map(f=>{
+      const allowed=prod?(prod.fieldConstraints||{})[f.id]??f.values.map(v=>v.code):f.values.map(v=>v.code);
+      return f.type==='optional'?[''].concat(allowed):(allowed.length?allowed:['']);
+    });
+    const combos=cart(fArrays);
+
+    combos.forEach(combo=>{
+      const fMap={}; otherF.forEach((f,i)=>fMap[f.id]=combo[i]);
+      let code='',fullName='',cols={'Mã nhóm':pc};
+
+      if(gid==='VCK'){
+        const[dd,lc,vl,ap,bic]=[fMap[g.fields[1].id],fMap[g.fields[2].id],fMap[g.fields[3].id],fMap[g.fields[4].id],fMap[g.fields[5].id]];
+        if(!dd||!vl) return;
+        const isR=VAN_TRON.includes(pc),isHS=HS.includes(pc);
+        if(!isR&&!lc) return;
+        if(isHS&&!ap) return;
+        if(!isHS&&ap) return;
+        code=isR?`${pc}/${dd}/${vl}`:`${pc}/${dd}/${lc}/${vl}`;
+        if(ap) code+='-'+ap; if(bic) code+='-'+bic;
+        fullName=`${pc} ${dd}mm${isR?'':', cánh '+(lc==='1'?'song song':'đối ngẫu')}, ${vl}${ap?' – '+ap:''}${bic?' – BIC '+bic:''}`;
+        Object.assign(cols,{'Độ dày':dd,'Loại cánh':isR?'(tròn)':lc,'Vật liệu':vl,'Áp suất':ap||'','BIC':bic||''});
+      } else if(gid==='EI'){
+        const[dd,lc,vl,ei,L]=[fMap[g.fields[1].id],fMap[g.fields[2].id],fMap[g.fields[3].id],fMap[g.fields[4].id],fMap[g.fields[5].id]];
+        if(!dd||!lc||!vl||!ei) return;
+        code=`${pc}/${dd}/${lc}/${vl} (${ei}${L?' '+L:''})`;
+        fullName=code;
+        Object.assign(cols,{'Độ dày':dd,'Loại cánh':lc,'Vật liệu':vl,'Cấp EI':ei,'Chiều dài':L||''});
+      } else if(gid==='VAV'){
+        const[sz,suoi,ta]=[fMap[g.fields[1].id],fMap[g.fields[2].id],fMap[g.fields[3].id]];
+        if(!sz) return;
+        code=pc+'-'+sz; if(suoi) code+='/'+suoi; if(ta) code+='/'+ta;
+        fullName=`${pc} size ${sz}"${suoi?' – Sưởi '+suoi:''}${ta?' – '+ta:' – Mút xốp trứng'}`;
+        Object.assign(cols,{'Size':sz+'"','Sưởi':suoi||'','Tiêu âm':ta||'Mút xốp trứng'});
+      } else if(gid==='TA'){
+        const[L,ta,bic]=[fMap[g.fields[1].id],fMap[g.fields[2].id],fMap[g.fields[3].id]];
+        if(!ta) return;
+        const isL=(pc==='S-LVT'||pc==='S-LVO');
+        if(isL&&!L) return; if(!isL&&L) return;
+        code=(isL?pc+L:pc)+'/'+ta; if(bic) code+='/'+bic;
+        fullName=(isL?pc+L:pc)+' – Tiêu âm '+ta+(bic?' – BIC '+bic:'');
+        Object.assign(cols,{'Chiều dài L':L||'','Lớp tiêu âm':ta,'BIC':bic||''});
+      } else if(gid==='TMC'){
+        const[pk,w,h_,vl,dd]=[fMap[g.fields[1].id],fMap[g.fields[2].id],fMap[g.fields[3].id],fMap[g.fields[4].id],fMap[g.fields[5].id]];
+        if(!w||!vl) return;
+        if(pc==='MC'){ if(!h_) return; code=`MC-${w}x${h_}/${vl}${dd?'-'+dd:''}`; }
+        else if(pc==='TC'){ code=`TC-${w}${h_?'x'+h_:''}/${vl}${dd?'-'+dd:''}`; }
+        else if(pc==='N-MC'){ code=`N-MC-${w}-${vl}${dd?'-'+dd:''}`; }
+        else if(pc==='PKM'||pc==='PKT'){ if(!pk) return; code=`${pc}-${pk}-${w}-${vl}`; }
+        else if(pc==='N-PKM'||pc==='N-PKT'){ if(!pk) return; code=`${pc}-${pk}-${w}`; }
+        else code=`${pc}-${w}/${vl}${dd?'-'+dd:''}`;
+        fullName=`${pc}${pk?' '+pk:''} W${w}${h_?' H'+h_:''} ${vl}${dd?' '+dd+'mm':''}`;
+        Object.assign(cols,{'Loại PK':pk||'','W':w,'H':h_||'','Vật liệu':vl,'Độ dày':dd||''});
+      } else {
+        const codeParts=[pc,...combo.filter(Boolean)]; code=codeParts.join('/'); fullName=code;
+      }
+
+      if(!code||seen.has(code)) return; seen.add(code);
+      results.push({code,fullName,groupId:gid,groupName:g.name,prodCode:pc,cols,createdAt:new Date().toLocaleString('vi')});
+    });
+  });
+
+  S.codes=S.codes.filter(c=>!(c.groupId===gid&&codes.includes(c.prodCode)));
+  S.codes.push(...results); renderSb(); saveToDB('codes');
+  const colNames=results.length?Object.keys(results[0].cols):[];
+  showRes(gid,results,colNames);
+}
+
+function showRes(gid,results,colNames){
+  const el=document.getElementById('res-'+gid); if(!el) return;
+  if(!results.length){el.innerHTML=`<div class="notice ni">ℹ️ Không tạo được mã nào.</div>`;return;}
+  const SHOW=2000; const shown=results.slice(0,SHOW);
+  el.innerHTML=`<div class="card">
+    <div class="card-h" style="padding:8px 12px">
+      <span class="card-t">✅ <b>${results.length.toLocaleString()}</b> mã – [${gid}]</span>
+      ${results.length>SHOW?`<span class="xs muted" style="margin-left:4px">(hiển thị ${SHOW.toLocaleString()}/${results.length.toLocaleString()})</span>`:''}
+      <div class="f1"></div>
+      <button class="btn btn-g btn-sm" onclick="doExpGrp('${gid}')">↓ Xuất Excel [${gid}] (${results.length.toLocaleString()} mã)</button>
+    </div>
+    <div class="tbl-wrap"><div class="tbl-sc" style="max-height:480px">
+      <table class="dt">
+        <thead><tr><th style="width:36px">#</th><th style="min-width:200px">Mã sản phẩm</th>
+          ${colNames.map(n=>`<th style="white-space:nowrap">${n}</th>`).join('')}
+          <th style="min-width:260px">Tên sản phẩm đầy đủ</th>
+        </tr></thead>
+        <tbody>${shown.map((r,i)=>`<tr>
+          <td class="xs muted">${i+1}</td>
+          <td><span class="mono fw6" style="font-size:12px;color:var(--navy2)">${r.code}</span></td>
+          ${colNames.map(n=>{const v=(r.cols||{})[n]||'';return`<td><span class="ctag ${v?'':'g'}" style="font-size:10.5px">${v||'—'}</span></td>`;}).join('')}
+          <td class="xs muted" style="line-height:1.4">${r.fullName}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div></div></div>`;
+}
+
+// ═══════════════════════════════════════════════════════════
+// ALL CODES VIEW
+// ═══════════════════════════════════════════════════════════
+function renderAllCodes(){
+  setPath([{l:'Danh sách mã đã tạo',b:true}]);
+  const byG={}; S.codes.forEach(c=>{if(!byG[c.groupId])byG[c.groupId]=[];byG[c.groupId].push(c);});
+  let h=`<div class="fac g8 mb12">
+    <div class="sm fw6">Tổng: ${S.codes.length.toLocaleString()} mã</div><div class="f1"></div>
+    <button class="btn btn-d btn-sm" onclick="clearAll()">🗑 Xoá tất cả</button>
+    <button class="btn btn-g btn-sm" onclick="exportAll()">↓ Xuất Excel tất cả</button>
+  </div>`;
+  if(!S.codes.length){ h+=`<div style="text-align:center;padding:60px;color:var(--t4)"><div style="font-size:36px;margin-bottom:8px">📭</div><div>Chưa có mã. Vào "Tạo tổ hợp mã" để tạo.</div></div>`; }
+  else Object.entries(byG).forEach(([gid,codes])=>{
+    const g=GROUPS.find(x=>x.id===gid)||{name:gid};
+    h+=`<div class="card mb12">
+      <div class="card-h" style="padding:8px 12px">
+        <span class="card-t">[${gid}] ${g.name}</span>
+        <span class="bdg" style="background:var(--bl);color:var(--blue)">${codes.length.toLocaleString()} mã</span>
+        <div class="f1"></div>
+        <button class="btn btn-g btn-xs" onclick="doExpGrp('${gid}')">↓ Excel</button>
+        <button class="btn btn-d btn-xs" onclick="delGrp('${gid}')">🗑</button>
+      </div>
+      <div class="tbl-wrap"><div class="tbl-sc" style="max-height:240px">
+        <table class="dt"><thead><tr><th style="width:36px">#</th><th>Mã sản phẩm</th><th>Tên đầy đủ</th><th style="width:44px">Xoá</th></tr></thead>
+        <tbody>${codes.map((c,i)=>`<tr>
+          <td class="xs muted">${i+1}</td>
+          <td><span class="mono fw6" style="font-size:12px">${c.code}</span></td>
+          <td class="xs muted">${c.fullName||''}</td>
+          <td><button class="ib del" onclick="delCode('${esc(c.code)}')">✕</button></td>
+        </tr>`).join('')}</tbody></table>
+      </div></div></div>`;
+  });
+  document.getElementById('MC').innerHTML=h;
+}
+function delCode(code){S.codes=S.codes.filter(c=>c.code!==code);renderAllCodes();renderSb();saveToDB('codes');}
+function delGrp(gid){if(!confirm('Xoá tất cả mã ['+gid+']?'))return;S.codes=S.codes.filter(c=>c.groupId!==gid);renderAllCodes();renderSb();saveToDB('codes');}
+function clearAll(){if(!confirm('Xoá tất cả mã?'))return;S.codes=[];renderAllCodes();renderSb();saveToDB('codes');}
+
+// ═══════════════════════════════════════════════════════════
+// TAGS / GHI CHÚ TỔNG
+// Logic: Tag gán vào prodCode (nhóm sản phẩm), không phải mã chi tiết
+// Khi xuất: lấy tất cả S.codes thuộc prodCode đó + tự ghép ghi chú đặc trưng
+// ═══════════════════════════════════════════════════════════
+function renderTags(){
+  setPath([{l:'Ghi chú tổng / Tags',b:true}]);
+  let h=`<div class="notice ni mb12">
+    💡 <b>Cách dùng:</b> Tạo Tag → nhập ghi chú tổng → chọn các <b>nhóm sản phẩm</b> (SAG, DAG, VCD-H...) để gán.
+    Khi xuất Excel, mỗi mã chi tiết sẽ nhận <b>ghi chú tổng</b> + <b>ghi chú đặc trưng</b> tự động từ thuộc tính mã đó.
+  </div>
+  <div class="fac g8 mb12">
+    <div class="sm fw6">Tags: ${TAGS.length}</div><div class="f1"></div>
+    <button class="btn btn-p btn-sm" onclick="openAddTag()">＋ Tạo Tag mới</button>
+    ${TAGS.length?`<button class="btn btn-g btn-sm" onclick="expAllTags()">↓ Xuất tất cả Tags</button>`:''}
+  </div>`;
+
+  if(!TAGS.length){
+    h+=`<div style="text-align:center;padding:60px;color:var(--t4)"><div style="font-size:36px;margin-bottom:8px">🏷</div>
+      <div>Chưa có Tag. Tạo Tag để quản lý ghi chú theo dự án, tiêu chuẩn kỹ thuật...</div></div>`;
+  } else {
+    TAGS.forEach(tag=>{
+      // Count actual codes this tag covers
+      const coveredCodes=S.codes.filter(c=>tag.prodCodes&&tag.prodCodes.some(p=>p.gid===c.groupId&&p.code===c.prodCode));
+      h+=`<div class="tag-card">
+        <div class="tag-hd">
+          <span class="tag-dot" style="background:${tag.color||'#1a6ef5'}"></span>
+          <span class="tag-nm">${tag.name}</span>
+          <span class="tag-note">${tag.note?tag.note.slice(0,80)+(tag.note.length>80?'…':''):''}</span>
+          <span class="bdg" style="background:var(--bl);color:var(--blue);margin-right:6px">${coveredCodes.length} mã chi tiết</span>
+          <button class="btn btn-o btn-xs" onclick="openAssign('${tag.id}')">＋ Gán sản phẩm</button>
+          <button class="btn btn-o btn-xs" onclick="openNoteBuilder('${tag.id}')">🔧 Cấu hình ghi chú</button>
+          <button class="btn btn-g btn-xs" onclick="expTag('${tag.id}')">↓ Excel</button>
+          <button class="btn btn-o btn-xs" onclick="editTag('${tag.id}')">✏</button>
+          <button class="btn btn-d btn-xs" onclick="delTag('${tag.id}')">🗑</button>
+        </div>
+        ${(tag.prodCodes||[]).length?`<div style="padding:8px 14px;border-top:1px solid var(--bd);display:flex;flex-wrap:wrap;gap:5px">
+          ${tag.prodCodes.map(p=>`<span class="ctag" style="font-size:10.5px">[${p.gid}] ${p.code}</span>`).join('')}
+        </div>`:'<div style="padding:8px 14px;color:var(--t4);font-size:12px">Chưa gán sản phẩm nào.</div>'}
+      </div>`;
+    });
+  }
+  document.getElementById('MC').innerHTML=h;
+}
+
+function openAddTag(){
+  document.getElementById('tag-id').value='';
+  document.getElementById('tag-ttl').textContent='Tạo Tag mới';
+  document.getElementById('tag-nm').value='';
+  document.getElementById('tag-note').value='';
+  document.getElementById('tag-clr').value='#1a6ef5';
+  OM('m-tag');
+}
+function editTag(id){
+  const t=TAGS.find(x=>x.id===id); if(!t) return;
+  document.getElementById('tag-id').value=id;
+  document.getElementById('tag-ttl').textContent='Sửa Tag';
+  document.getElementById('tag-nm').value=t.name;
+  document.getElementById('tag-note').value=t.note||'';
+  document.getElementById('tag-clr').value=t.color||'#1a6ef5';
+  OM('m-tag');
+}
+function doSaveTag(){
+  const id=document.getElementById('tag-id').value;
+  const name=document.getElementById('tag-nm').value.trim();
+  if(!name){alert('Nhập tên Tag.');return;}
+  const note=document.getElementById('tag-note').value.trim();
+  const color=document.getElementById('tag-clr').value;
+  if(id){const t=TAGS.find(x=>x.id===id);if(t){t.name=name;t.note=note;t.color=color;}}
+  else TAGS.push({id:'t'+Date.now(),name,note,color,prodCodes:[]});
+  CM('m-tag'); renderSb(); renderTags(); saveToDB('tags');
+}
+function delTag(id){if(!confirm('Xoá Tag?'))return;TAGS=TAGS.filter(x=>x.id!==id);renderSb();renderTags();saveToDB('tags');}
+
+let _asnTagId=null;
+function openAssign(tagId){
+  _asnTagId=tagId;
+  const t=TAGS.find(x=>x.id===tagId); if(!t) return;
+  document.getElementById('assign-t').textContent='Gán sản phẩm vào Tag: '+t.name;
+
+  // Build list by group → product
+  const byG={}; S.codes.forEach(c=>{if(!byG[c.groupId])byG[c.groupId]=new Set(); byG[c.groupId].add(c.prodCode);});
+
+  let h='';
+  if(!S.codes.length){ h='<div class="xs muted">Chưa có mã nào. Hãy tạo mã trước.</div>'; }
+  else {
+    GROUPS.forEach(g=>{
+      const prods=byG[g.groupId]||byG[g.id];
+      if(!prods||!prods.size) return;
+      h+=`<div style="padding:5px 10px;font-size:9.5px;font-weight:700;color:var(--t3);text-transform:uppercase;background:var(--s2);border-bottom:1px solid var(--bd)">[${g.id}] ${g.name}</div>`;
+      Array.from(prods).forEach(pc=>{
+        const checked=(t.prodCodes||[]).some(p=>p.gid===g.id&&p.code===pc)?'checked':'';
+        const cnt=S.codes.filter(c=>c.groupId===g.id&&c.prodCode===pc).length;
+        h+=`<label class="asn-row" data-gid="${g.id}" data-code="${pc.replace(/"/g,'&quot;')}" style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);cursor:pointer">
+          <input type="checkbox" class="asn-chk" data-gid="${g.id}" data-code="${pc.replace(/"/g,'&quot;')}" ${checked} onchange="updAsnCnt()" style="accent-color:var(--blue);cursor:pointer;flex-shrink:0">
+          <span class="mono fw6" style="font-size:11px;color:var(--blue);min-width:90px">${pc}</span>
+          <span class="xs muted">${cnt} mã chi tiết</span>
+        </label>`;
+      });
+    });
+  }
+  document.getElementById('asn-body').innerHTML=h;
+  updAsnCnt();
+  OM('m-assign');
+}
+function updAsnCnt(){ const n=document.querySelectorAll('.asn-chk:checked').length; const el=document.getElementById('asn-cnt'); if(el) el.textContent=n; }
+function filterAsn(q){ const lo=q.toLowerCase(); document.querySelectorAll('.asn-row').forEach(r=>{ r.style.display=(!q||r.dataset.code.toLowerCase().includes(lo))?'flex':'none'; }); }
+function asnAll(val){ document.querySelectorAll('.asn-chk').forEach(c=>c.checked=val); updAsnCnt(); }
+function doSaveAssign(){
+  const t=TAGS.find(x=>x.id===_asnTagId); if(!t) return;
+  t.prodCodes=Array.from(document.querySelectorAll('.asn-chk:checked')).map(c=>({gid:c.dataset.gid,code:c.dataset.code}));
+  CM('m-assign'); renderTags(); saveToDB('tags');
+}
+
+// Build note for a specific code row = tag note + characteristic notes from cols
+// Supports: custom note config per tag, all group types
+function buildRowNote(code, tag){
+  const c=S.codes.find(x=>x.code===code); if(!c) return tag.note||'';
+  const nc=NOTE_CONFIG[tag.id]||{};
+  const fi=nc.fieldIncludes||{};
+  const noConfig=!Object.keys(fi).length;
+  const gid=c.groupId;
+  const cols=c.cols||{};
+  const chars=[];
+  // Helper: check if a col is included
+  function inc(col){ return noConfig||fi[gid+'__'+col]!==false; }
+
+  // --- CG ---
+  if(gid==='CG'){
+    if(inc('Vật liệu')&&cols['Vật liệu']&&cols['Vật liệu']!=='Nhôm') chars.push('VL: '+cols['Vật liệu']);
+    if(inc('Loại cửa')&&cols['Loại cửa']) chars.push(CG_DESC.loai_cua[cols['Loại cửa']]||cols['Loại cửa']);
+    if(inc('Loại nan')&&cols['Loại nan']) chars.push(CG_DESC.nan[cols['Loại nan']]||'Nan '+cols['Loại nan']);
+    if(inc('Mặt viền')&&cols['Mặt viền']&&cols['Mặt viền']!=='0') chars.push('Mặt '+cols['Mặt viền']+'mm');
+    if(inc('KC nan')&&cols['KC nan']) chars.push('KC'+cols['KC nan']+'mm');
+    if(inc('Option')&&cols['Option']) chars.push(CG_DESC.option[cols['Option']]||cols['Option']);
+  }
+  // --- VCK ---
+  else if(gid==='VCK'){
+    if(inc('Loại cánh')&&cols['Loại cánh']&&cols['Loại cánh']!=='(tròn)') chars.push(cols['Loại cánh']==='1'?'Song song':'Đối ngẫu');
+    if(inc('Vật liệu')&&cols['Vật liệu']) chars.push('VL: '+cols['Vật liệu']);
+    if(inc('Độ dày')&&cols['Độ dày']) chars.push('Dày '+cols['Độ dày']+'mm');
+    if(inc('Áp suất')&&cols['Áp suất']) chars.push(cols['Áp suất']);
+    if(inc('BIC')&&cols['BIC']) chars.push('BIC '+cols['BIC']);
+  }
+  // --- EI ---
+  else if(gid==='EI'){
+    if(inc('Cấp EI')&&cols['Cấp EI']) chars.push(cols['Cấp EI']);
+    if(inc('Vật liệu')&&cols['Vật liệu']) chars.push('VL: '+cols['Vật liệu']);
+    if(inc('Độ dày')&&cols['Độ dày']) chars.push('Dày '+cols['Độ dày']+'mm');
+    if(inc('Chiều dài')&&cols['Chiều dài']) chars.push('L '+cols['Chiều dài']);
+  }
+  // --- VAV ---
+  else if(gid==='VAV'){
+    if(inc('Size')&&cols['Size']) chars.push('Size '+cols['Size']);
+    if(inc('Sưởi')&&cols['Sưởi']) chars.push('Sưởi: '+cols['Sưởi']);
+    if(inc('Tiêu âm')&&cols['Tiêu âm']&&cols['Tiêu âm']!=='Mút xốp trứng') chars.push('TA: '+cols['Tiêu âm']);
+  }
+  // --- TA ---
+  else if(gid==='TA'){
+    if(inc('Lớp tiêu âm')&&cols['Lớp tiêu âm']) chars.push('TA: '+cols['Lớp tiêu âm']);
+    if(inc('BIC')&&cols['BIC']) chars.push('BIC '+cols['BIC']);
+    if(inc('Chiều dài L')&&cols['Chiều dài L']) chars.push('L='+cols['Chiều dài L']+'mm');
+  }
+  // --- TMC ---
+  else if(gid==='TMC'){
+    if(inc('Vật liệu')&&cols['Vật liệu']) chars.push('VL: '+cols['Vật liệu']);
+    if(inc('Độ dày')&&cols['Độ dày']) chars.push('Dày '+cols['Độ dày']+'mm');
+    if(inc('W')&&cols['W']) chars.push('W'+cols['W']);
+    if(inc('H')&&cols['H']) chars.push('H'+cols['H']);
+  }
+  // --- Generic ---
+  else {
+    Object.entries(cols).forEach(([k,v])=>{
+      if(!v||k==='Mã nhóm') return;
+      if(inc(k)) chars.push(`${k}: ${v}`);
+    });
+  }
+
+  const prefix=nc.prefix||'';
+  const suffix=nc.suffix||'';
+  const baseNote=(nc.useTagNote!==false)?(tag.note||''):'';
+  const charStr=chars.length?' | '+chars.join(', '):'';
+  return prefix+(baseNote?baseNote+charStr:chars.join(', '))+suffix;
+}
+
+// ── NOTE BUILDER ──
+let _nbTagId=null;
+function openNoteBuilder(tagId){
+  _nbTagId=tagId;
+  const tag=TAGS.find(x=>x.id===tagId); if(!tag) return;
+  const nc=NOTE_CONFIG[tagId]||{fieldIncludes:{},useTagNote:true,prefix:'',suffix:''};
+  document.getElementById('notebuilder-t').textContent='Cấu hình ghi chú – '+tag.name;
+
+  // Collect all column names from codes tagged
+  const taggedCodes=S.codes.filter(c=>tag.prodCodes&&tag.prodCodes.some(p=>p.gid===c.groupId&&p.code===c.prodCode));
+  const colSet=new Set();
+  taggedCodes.forEach(c=>Object.keys(c.cols||{}).forEach(k=>colSet.add(c.groupId+'::'+k)));
+
+  let h=`<div class="notice ni mb12">
+    🔧 Tuỳ chỉnh nội dung cột "Ghi chú" khi xuất Excel. Bật/tắt từng đặc tính để kiểm soát thông tin xuất hiện trong ghi chú.
+  </div>`;
+
+  h+=`<div class="note-section">
+    <div class="note-section-title">Cài đặt chung</div>
+    <div class="note-toggle-row">
+      <span class="note-toggle-lbl">Đưa nội dung ghi chú Tag vào ghi chú mã</span>
+      <input type="checkbox" id="nb-usenote" ${nc.useTagNote!==false?'checked':''} style="accent-color:var(--blue)">
+    </div>
+    <div class="note-toggle-row">
+      <span class="note-toggle-lbl">Tiền tố (prefix)</span>
+      <input class="fi mono" id="nb-prefix" value="${nc.prefix||''}" style="width:200px;height:26px;font-size:12px" placeholder="VD: [Kho HN] ">
+    </div>
+    <div class="note-toggle-row">
+      <span class="note-toggle-lbl">Hậu tố (suffix)</span>
+      <input class="fi mono" id="nb-suffix" value="${nc.suffix||''}" style="width:200px;height:26px;font-size:12px" placeholder="VD:  – Đặt hàng Q2">
+    </div>
+  </div>`;
+
+  // Group columns by groupId
+  const byGid={};
+  Array.from(colSet).forEach(key=>{
+    const[gid,col]=key.split('::');
+    if(!byGid[gid]) byGid[gid]=[];
+    if(!byGid[gid].includes(col)) byGid[gid].push(col);
+  });
+
+  if(Object.keys(byGid).length){
+    Object.entries(byGid).forEach(([gid,cols])=>{
+      h+=`<div class="note-section">
+        <div class="note-section-title">[${gid}] đặc tính</div>`;
+      cols.forEach(col=>{
+        const key=gid+'__'+col;
+        const on=(nc.fieldIncludes||{})[key]!==false;
+        h+=`<div class="note-toggle-row">
+          <span class="note-toggle-lbl">${col}</span>
+          <input type="checkbox" class="nb-fld" data-key="${key}" ${on?'checked':''} style="accent-color:var(--blue)">
+        </div>`;
+      });
+      h+=`</div>`;
+    });
+  } else {
+    h+=`<div class="notice nw">⚠️ Tag này chưa gán sản phẩm nào hoặc chưa tạo mã. Hãy gán sản phẩm trước.</div>`;
+  }
+
+  // Live preview
+  h+=`<div class="note-section">
+    <div class="note-section-title">Xem trước ghi chú (3 mã đầu)</div>
+    <div id="nb-preview">`;
+  taggedCodes.slice(0,3).forEach(c=>{
+    const note=buildRowNote(c.code, tag);
+    h+=`<div class="note-preview" style="margin-bottom:6px"><span style="color:rgba(255,255,255,.5)">${c.code}</span><br>${note||'(trống)'}</div>`;
+  });
+  if(!taggedCodes.length) h+=`<div class="xs muted">Chưa có mã để xem trước.</div>`;
+  h+=`</div></div>`;
+
+  document.getElementById('notebuilder-body').innerHTML=h;
+  OM('m-notebuilder');
+}
+
+function doSaveNoteBuilder(){
+  const useTagNote=document.getElementById('nb-usenote')?.checked!==false;
+  const prefix=document.getElementById('nb-prefix')?.value||'';
+  const suffix=document.getElementById('nb-suffix')?.value||'';
+  const fieldIncludes={};
+  document.querySelectorAll('.nb-fld').forEach(cb=>{
+    fieldIncludes[cb.dataset.key]=cb.checked;
+  });
+  NOTE_CONFIG[_nbTagId]={useTagNote,prefix,suffix,fieldIncludes};
+  CM('m-notebuilder');
+  renderTags(); saveToDB('note_config');
+}
+
+function expTag(tagId){
+  const t=TAGS.find(x=>x.id===tagId); if(!t) return;
+  const tagCodes=S.codes.filter(c=>t.prodCodes&&t.prodCodes.some(p=>p.gid===c.groupId&&p.code===c.prodCode));
+  if(!tagCodes.length){alert('Tag này chưa có mã nào.');return;}
+  try{
+    const wb=XLSX.utils.book_new();
+    const sr=[['STT','Mã sản phẩm','Nhóm','Tên sản phẩm đầy đủ','Tag','Ghi chú tổng + Đặc trưng']];
+    tagCodes.forEach((c,i)=>sr.push([i+1,c.code,c.groupId,c.fullName||'',t.name,buildRowNote(c.code,t)]));
+    const ws0=XLSX.utils.aoa_to_sheet(sr);
+    ws0['!cols']=[{wch:5},{wch:38},{wch:8},{wch:80},{wch:20},{wch:80}];
+    XLSX.utils.book_append_sheet(wb,ws0,sanitizeSheet('Tag_'+t.name));
+    const byGid={}; tagCodes.forEach(c=>{if(!byGid[c.groupId])byGid[c.groupId]=[];byGid[c.groupId].push(c);});
+    Object.entries(byGid).forEach(([gid,codes])=>{
+      const g=GROUPS.find(x=>x.id===gid); if(!g) return;
+      const colSet=new Set(); codes.forEach(c=>Object.keys(c.cols||{}).forEach(k=>colSet.add(k)));
+      const colNames=Array.from(colSet);
+      const hdr=['STT','Mã sản phẩm',...colNames,'Tên sản phẩm đầy đủ','Ghi chú tổng + Đặc trưng'];
+      const rows=[hdr];
+      codes.forEach((c,i)=>rows.push([i+1,c.code,...colNames.map(n=>(c.cols||{})[n]||''),c.fullName||'',buildRowNote(c.code,t)]));
+      const ws=XLSX.utils.aoa_to_sheet(rows);
+      ws['!cols']=[{wch:5},{wch:35},...colNames.map(()=>({wch:13})),{wch:70},{wch:80}];
+      XLSX.utils.book_append_sheet(wb,ws,sanitizeSheet('['+gid+']'));
+    });
+    XLSX.writeFile(wb,'NSCA_Tag_'+t.name.replace(/[^a-zA-Z0-9]/g,'_')+'_'+tagCodes.length+'ma_'+new Date().toISOString().slice(0,10)+'.xlsx');
+  }catch(e){alert('Lỗi xuất Excel: '+e.message);}
+}
+
+function expAllTags(){
+  if(!TAGS.length){alert('Chưa có Tag.');return;}
+  try{
+    const wb=XLSX.utils.book_new();
+    TAGS.forEach(tag=>{
+      const codes=S.codes.filter(c=>tag.prodCodes&&tag.prodCodes.some(p=>p.gid===c.groupId&&p.code===c.prodCode));
+      if(!codes.length) return;
+      const rows=[['STT','Mã sản phẩm','Nhóm','Tên sản phẩm đầy đủ','Ghi chú']];
+      codes.forEach((c,i)=>rows.push([i+1,c.code,c.groupId,c.fullName||'',buildRowNote(c.code,tag)]));
+      const ws=XLSX.utils.aoa_to_sheet(rows);
+      ws['!cols']=[{wch:5},{wch:38},{wch:8},{wch:80},{wch:80}];
+      XLSX.utils.book_append_sheet(wb,ws,sanitizeSheet(tag.name));
+    });
+    XLSX.writeFile(wb,'NSCA_TatCaTags_'+new Date().toISOString().slice(0,10)+'.xlsx');
+  }catch(e){alert('Lỗi xuất Excel: '+e.message);}
+}
+
+// ═══════════════════════════════════════════════════════════
+// EXPORT – FIX: sanitize sheet names (max 31 chars, no special chars)
+// ═══════════════════════════════════════════════════════════
+function sanitizeSheet(name){
+  return String(name).replace(/[:\\\/\?\*\[\]]/g,'_').slice(0,31);
+}
+
+function doExpGrp(gid){
+  const g=GROUPS.find(x=>x.id===gid);
+  const codes=S.codes.filter(c=>c.groupId===gid);
+  if(!codes.length){alert('Nhóm ['+gid+'] chưa có mã. Hãy tạo mã trước.');return;}
+  try{
+    const wb=XLSX.utils.book_new();
+    const colSet=new Set(); codes.forEach(c=>Object.keys(c.cols||{}).forEach(k=>colSet.add(k)));
+    const colNames=Array.from(colSet);
+    const hdr=['STT','Mã sản phẩm',...colNames,'Tên sản phẩm đầy đủ','Ghi chú'];
+    const rows=[hdr];
+    codes.forEach((c,i)=>rows.push([i+1,c.code,...colNames.map(n=>(c.cols||{})[n]||''),c.fullName||'','']));
+    const ws=XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols']=[{wch:5},{wch:35},...colNames.map(()=>({wch:13})),{wch:70},{wch:18}];
+    XLSX.utils.book_append_sheet(wb,ws,sanitizeSheet('['+gid+'] '+g.name));
+    XLSX.writeFile(wb,'NSCA_'+gid+'_'+codes.length+'ma_'+new Date().toISOString().slice(0,10)+'.xlsx');
+  }catch(e){alert('Lỗi xuất Excel: '+e.message);}
+}
+
+function exportAll(){
+  if(!S.codes.length){alert('Chưa có mã.');return;}
+  try{
+    const wb=XLSX.utils.book_new();
+    const sr=[['STT','Mã sản phẩm','Nhóm','Tên nhóm','Tên sản phẩm đầy đủ']];
+    S.codes.forEach((c,i)=>sr.push([i+1,c.code,c.groupId,c.groupName||'',c.fullName||'']));
+    const ws0=XLSX.utils.aoa_to_sheet(sr); ws0['!cols']=[{wch:5},{wch:38},{wch:8},{wch:35},{wch:80}];
+    XLSX.utils.book_append_sheet(wb,ws0,'Tong hop');
+    [...new Set(S.codes.map(c=>c.groupId))].forEach(gid=>{
+      const g=GROUPS.find(x=>x.id===gid); if(!g) return;
+      const codes=S.codes.filter(c=>c.groupId===gid);
+      const colSet=new Set(); codes.forEach(c=>Object.keys(c.cols||{}).forEach(k=>colSet.add(k)));
+      const colNames=Array.from(colSet);
+      const rows=[['STT','Mã sản phẩm',...colNames,'Tên sản phẩm đầy đủ']];
+      codes.forEach((c,i)=>rows.push([i+1,c.code,...colNames.map(n=>(c.cols||{})[n]||''),c.fullName||'']));
+      const ws=XLSX.utils.aoa_to_sheet(rows); ws['!cols']=[{wch:5},{wch:35},...colNames.map(()=>({wch:13})),{wch:70}];
+      XLSX.utils.book_append_sheet(wb,ws,sanitizeSheet('['+gid+']'));
+    });
+    const rr=[['Nhóm','ID','SP/Trường','Loại','Mã','Ý nghĩa','Ghi chú']];
+    GROUPS.forEach(g=>{
+      if(g.type==='CG') CG_PRODUCTS.forEach(p=>rr.push([g.name,g.id,p.code,'product',p.code,p.desc,'']));
+      else g.fields.forEach(f=>f.values.forEach(v=>rr.push([g.name,g.id,f.name,f.type,v.code,v.desc,v.note])));
+    });
+    const wr=XLSX.utils.aoa_to_sheet(rr); wr['!cols']=[{wch:28},{wch:8},{wch:28},{wch:10},{wch:16},{wch:50},{wch:40}];
+    XLSX.utils.book_append_sheet(wb,wr,'Bang nguyen tac');
+    XLSX.writeFile(wb,'NSCA_ToanBo_'+S.codes.length+'ma_'+new Date().toISOString().slice(0,10)+'.xlsx');
+  }catch(e){alert('Lỗi xuất Excel: '+e.message);}
+}
+
+// ═══════════════════════════════════════════════════════════
+// FIELD / VALUE CRUD
+// ═══════════════════════════════════════════════════════════
+let _afGid=null,_avCtx=null,_evCtx=null;
+function openAddFld(gid){_afGid=gid;document.getElementById('addfld-t').textContent='Thêm trường – ['+gid+']';
+  ['af-nm','af-vals'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('af-tp').value='required'; OM('m-addfld');}
+function doAddFld(){const nm=document.getElementById('af-nm').value.trim();if(!nm){alert('Nhập tên.');return;}
+  const tp=document.getElementById('af-tp').value;
+  const vals=document.getElementById('af-vals').value.trim().split('\n').map(l=>{const eq=l.indexOf('=');return eq<0?{code:l.trim(),desc:'',note:''}:{code:l.slice(0,eq).trim(),desc:l.slice(eq+1).trim(),note:''};}).filter(v=>v.code);
+  GROUPS.find(x=>x.id===_afGid).fields.push({id:'f'+Date.now(),name:nm,type:tp,desc:'',values:vals});
+  CM('m-addfld'); renderGrp(_afGid); saveToDB('groups_extra');}
+function editFldNm(gid,fid){const g=GROUPS.find(x=>x.id===gid),f=g.fields.find(x=>x.id===fid);const n=prompt('Tên:',f.name);if(n!==null){f.name=n;renderGrp(gid);saveToDB('groups_extra');}}
+function delFld(gid,fid){if(!confirm('Xoá trường?'))return;const g=GROUPS.find(x=>x.id===gid);g.fields=g.fields.filter(f=>f.id!==fid);renderGrp(gid);saveToDB('groups_extra');}
+function openAddVal(gid,fid){_avCtx={gid,fid};['av-c','av-d','av-n'].forEach(id=>document.getElementById(id).value='');OM('m-av');}
+function doAddVal(){const c=document.getElementById('av-c').value.trim();if(!c){alert('Nhập mã.');return;}
+  const{gid,fid}=_avCtx,g=GROUPS.find(x=>x.id===gid),f=g.fields.find(x=>x.id===fid);
+  f.values.push({code:c,desc:document.getElementById('av-d').value.trim(),note:document.getElementById('av-n').value.trim()});
+  CM('m-av'); renderGrp(gid); saveToDB('groups_extra');}
+function openEditVal(gid,fid,vi){const g=GROUPS.find(x=>x.id===gid),f=g.fields.find(x=>x.id===fid),v=f.values[vi];
+  document.getElementById('ev-c').value=v.code||'';document.getElementById('ev-d').value=v.desc||'';document.getElementById('ev-n').value=v.note||'';
+  _evCtx={gid,fid,vi}; OM('m-ev');}
+function doSaveVal(){const{gid,fid,vi}=_evCtx,g=GROUPS.find(x=>x.id===gid),f=g.fields.find(x=>x.id===fid);
+  f.values[vi]={code:document.getElementById('ev-c').value.trim(),desc:document.getElementById('ev-d').value.trim(),note:document.getElementById('ev-n').value.trim()};
+  CM('m-ev'); renderGrp(gid); saveToDB('groups_extra');}
+function delVal(gid,fid,vi){if(!confirm('Xoá?'))return;GROUPS.find(x=>x.id===gid).fields.find(x=>x.id===fid).values.splice(vi,1);renderGrp(gid);saveToDB('groups_extra');}
+
+// GROUP CRUD
+function doAddGrp(){const nm=document.getElementById('ag-nm').value.trim(),id=document.getElementById('ag-id').value.trim().toUpperCase();
+  if(!nm||!id){alert('Điền đủ thông tin.');return;}if(GROUPS.find(g=>g.id===id)){alert('ID đã tồn tại.');return;}
+  GROUPS.push({id,name:nm,format:document.getElementById('ag-fmt').value.trim()||'[TRƯỜNG 1]/[TRƯỜNG 2]',
+    example:document.getElementById('ag-ex').value.trim()||'',type:'generic',fields:[]});
+  CM('m-addgrp'); renderSb(); goGrp(id); saveToDB('groups_extra');}
+function editGrpNm(gid){const g=GROUPS.find(x=>x.id===gid);const n=prompt('Tên nhóm:',g.name);if(n!==null){g.name=n;renderSb();goGrp(gid);saveToDB('groups_extra');}}
+
+// MODAL HELPERS
+function OM(id){document.getElementById(id).classList.add('open');}
+function CM(id){document.getElementById(id).classList.remove('open');}
+function esc(s){return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
+document.querySelectorAll('.mbg').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
+</script>
+</body>
+</html>
