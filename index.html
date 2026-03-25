@@ -24,6 +24,10 @@ const EMAILJS_TEMPLATE_ID  = 'YOUR_TEMPLATE_ID';
 // 🗄️ SUPABASE CONFIG
 // URL và Key lấy từ: https://supabase.com → Project Settings → API
 // ══════════════════════════════════════════════
+// GOOGLE SHEET PUSH CONFIG
+// Sau khi deploy Apps Script, dan Web App URL vao day:
+let GSHEET_URL = ''; // VD: https://script.google.com/macros/s/ABC.../exec
+
 const SUPA_URL = 'https://gqisjvyjdbtxzbvylmwh.supabase.co';
 // Publishable (anon) key – lấy từ Project Settings → API → Project API keys → anon/public
 const SUPA_KEY = 'sb_publishable_Wr5uZh3hLVOQIPymHrOV-w_NqxfcnBs';
@@ -498,6 +502,8 @@ body{font-family:'Inter',sans-serif;background:var(--s2);color:var(--tx);font-si
     <button class="btn btn-o btn-sm" onclick="go('fieldlib')" title="Thư viện trường toàn cục">📚 Thư viện trường</button>
     <button class="btn btn-p btn-sm" onclick="go('combo')">⚡ Tạo tổ hợp mã</button>
     <button class="btn btn-g btn-sm" onclick="exportAll()">↓ Xuất Excel</button>
+    <button class="btn btn-o btn-sm" onclick="exportCatalog(null)" title="Xuất theo format: Thể loại | Mã hiệu | Tên gọi | ĐVT | Mô tả">📋 Xuất danh mục</button>
+    <button class="btn btn-o btn-sm" onclick="pushToGSheet()" title="Cập nhật toàn bộ mã lên Google Sheet">📊 Đẩy GSheet</button>
   </div>
   <div class="content" id="MC"></div>
 </div>
@@ -1510,6 +1516,7 @@ function toggleGuideStep(i){
 
 document.addEventListener('DOMContentLoaded', async ()=>{
   await loadFromDB();
+  await loadGSheetUrl();
   // Không tự đăng nhập – chờ user nhập
 });
 
@@ -1800,6 +1807,31 @@ function delFlibFld(id){
   if(!confirm('Xoá trường này khỏi thư viện?')) return;
   FIELD_LIBRARY=FIELD_LIBRARY.filter(x=>x.id!==id);
   renderFieldLib(); saveToDB('field_library');
+}
+
+function openAddFlibVal(flibId){
+  const fl=FIELD_LIBRARY.find(x=>x.id===flibId); if(!fl) return;
+  const c=prompt("Mã ký hiệu mới:"); if(!c) return;
+  const d=prompt("Ý nghĩa / Mô tả:","");
+  fl.values.push({code:c.trim(),desc:(d||"").trim(),note:""});
+  saveToDB("field_library");
+  if(S.view==="group"&&S.gid==="CG") renderGrp("CG"); else renderFieldLib();
+}
+function openEditFlibVal(flibId,vi){
+  const fl=FIELD_LIBRARY.find(x=>x.id===flibId); if(!fl||!fl.values[vi]) return;
+  const v=fl.values[vi];
+  const c=prompt("Mã ký hiệu:",v.code); if(c===null) return;
+  const d=prompt("Ý nghĩa / Mô tả:",v.desc);
+  fl.values[vi]={code:c.trim(),desc:(d||"").trim(),note:v.note||""};
+  saveToDB("field_library");
+  if(S.view==="group"&&S.gid==="CG") renderGrp("CG"); else renderFieldLib();
+}
+function delFlibVal(flibId,vi){
+  const fl=FIELD_LIBRARY.find(x=>x.id===flibId); if(!fl) return;
+  if(!confirm("Xoá giá trị \""+fl.values[vi]?.code+"\"?")) return;
+  fl.values.splice(vi,1);
+  saveToDB("field_library");
+  if(S.view==="group"&&S.gid==="CG") renderGrp("CG"); else renderFieldLib();
 }
 
 // ── Product Schema Builder ──
@@ -2332,7 +2364,7 @@ function renderGrp(gid){
   <div class="fac g8 mb8">
     <div class="xs muted f1">Ví dụ: <b class="mono">${g.example}</b></div>
     ${g.type!=='CG'?`<button class="btn btn-o btn-sm" onclick="guardedOpenEditGrp('${gid}')">✏ Sửa ràng buộc</button><button class="btn btn-o btn-sm" onclick="guardedOpenAddFld('${gid}')">＋ Thêm trường</button>`:''}
-    ${g.type==='CG'?`<button class="btn btn-p btn-sm" onclick="guardedOpenEditCG()">✏ Sửa ràng buộc CG</button>`:''}
+    ${g.type==='CG'?`<button class="btn btn-o btn-sm" onclick="guardedOpenEditCG()">✏ Sửa ràng buộc</button><button class="btn btn-o btn-sm" onclick="requirePerm('edit',()=>openAddCGField())">＋ Thêm trường</button>`:''}
   </div>`;
 
   if(g.type==='CG'){
@@ -2373,30 +2405,46 @@ function renderGrp(gid){
       </table></div>
     </div>`;
 
-    // Bảng định nghĩa giá trị CG
-    const cgFieldDefs=[
-      {name:'Loại cửa',vals:Object.entries(CG_DESC.loai_cua).map(([k,v])=>({code:k,desc:v}))},
-      {name:'Loại khung',vals:Object.entries(CG_DESC.khung).map(([k,v])=>({code:k,desc:v}))},
-      {name:'Loại nan',vals:Object.entries(CG_DESC.nan).map(([k,v])=>({code:k,desc:v}))},
-      {name:'Mặt viền',vals:Object.entries(CG_DESC.mat).map(([k,v])=>({code:k,desc:v}))},
-      {name:'KC nan',vals:Object.entries(CG_DESC.kc).map(([k,v])=>({code:k,desc:v}))},
-      {name:'Vật liệu',vals:Object.entries(CG_DESC.vat_lieu).map(([k,v])=>({code:k||'(trống)',desc:v}))},
-      {name:'Option',vals:Object.entries(CG_DESC.option).map(([k,v])=>({code:k,desc:v}))},
+    // Bảng định nghĩa giá trị CG – editable giống nhóm khác
+    // Map CG_DESC keys sang field id để dùng chung hàm sửa giá trị
+    const CG_FIELD_MAP = [
+      {key:'loai_cua', name:'Loại cửa',    type:'required', flibId:'fl_loai_cua'},
+      {key:'khung',    name:'Loại khung',  type:'required', flibId:'fl_loai_khung'},
+      {key:'nan',      name:'Loại nan',    type:'required', flibId:'fl_loai_nan'},
+      {key:'mat',      name:'Mặt viền',    type:'required', flibId:'fl_mat_vien'},
+      {key:'kc',       name:'KC nan',      type:'required', flibId:'fl_kc_nan'},
+      {key:'vat_lieu', name:'Vật liệu',    type:'optional', flibId:'fl_vat_lieu'},
+      {key:'option',   name:'Option',      type:'optional', flibId:'fl_option_cg'},
     ];
     h+=`<div class="card" style="margin-top:10px">
-      <div class="card-h"><span class="card-t">📖 Bảng định nghĩa giá trị [CG]</span></div>
+      <div class="card-h">
+        <span class="card-t">📖 Bảng định nghĩa giá trị [CG]</span>
+        <span class="xs muted">Sửa giá trị trực tiếp trong Thư viện trường</span>
+        <button class="btn btn-o btn-sm" onclick="go('fieldlib')">📚 Mở Thư viện trường</button>
+      </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;padding:12px 14px">`;
-    cgFieldDefs.forEach(fd=>{
+    CG_FIELD_MAP.forEach(fd=>{
+      const fl=FIELD_LIBRARY.find(x=>x.id===fd.flibId);
+      const vals=fl ? fl.values : Object.entries(CG_DESC[fd.key]).map(([k,v])=>({code:k||'(trống)',desc:v,note:''}));
+      const bl=fd.type==='required'?'<span class="bdg bdg-r" style="font-size:9px">Bắt buộc</span>':'<span class="bdg bdg-o" style="font-size:9px">Tuỳ chọn</span>';
       h+=`<div style="border:1px solid var(--bd);border-radius:var(--rs);overflow:hidden">
-        <div style="padding:5px 10px;background:var(--s2);border-bottom:1px solid var(--bd)">
-          <span class="fw6 xs">${fd.name}</span>
+        <div style="padding:5px 10px;background:var(--s2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:6px">
+          <span class="fw6 xs">${fd.name}</span>${bl}
+          ${fl?`<button class="btn btn-o btn-xs" style="margin-left:auto" onclick="openAddFlibVal('${fl.id}')">＋</button>
+          <button class="ib" onclick="openEditFlibFld('${fl.id}')">✏</button>`
+          :`<span class="xs" style="color:var(--blue);margin-left:auto;cursor:pointer" onclick="go('fieldlib')" title="Vào Thư viện trường để thêm/sửa">✏ Thư viện</span>`}
         </div>
         <table class="dt" style="font-size:11px">
-          <thead><tr><th>Mã</th><th>Ý nghĩa</th></tr></thead>
-          <tbody>${fd.vals.map(v=>`<tr>
-            <td><span class="ctag" style="font-size:10px">${v.code}</span></td>
-            <td class="muted">${v.desc}</td>
-          </tr>`).join('')}</tbody>
+          <thead><tr><th>Mã</th><th>Ý nghĩa</th>${fl?'<th style="width:44px;text-align:center">Sửa</th>':''}</tr></thead>
+          <tbody>${vals.map((v,vi)=>`<tr>
+            <td><span class="ctag" style="font-size:10px">${v.code||'—'}</span></td>
+            <td class="muted">${v.desc||''}</td>
+            ${fl?`<td style="text-align:center">
+              <button class="ib" onclick="openEditFlibVal('${fl.id}',${vi})">✏</button>
+              <button class="ib del" onclick="delFlibVal('${fl.id}',${vi})">✕</button>
+            </td>`:''}
+          </tr>`).join('')}
+          </tbody>
         </table>
       </div>`;
     });
@@ -2598,6 +2646,7 @@ function buildCGConfig(codes){
       <span class="xs muted" id="est-CG">~${est.toLocaleString()} mã</span>
       <button class="btn btn-n" style="margin-left:8px" onclick="genCG()">⚡ Tạo mã CG</button>
       <button class="btn btn-g btn-sm" onclick="doExpGrp('CG')">↓ Excel</button>
+      <button class="btn btn-o btn-sm" onclick="exportCatalog('CG')" title="Xuất danh mục: Thể loại | Mã hiệu | Tên gọi...">📋 Danh mục</button>
     </div>
     <div style="padding:8px 12px">
       <div class="notice ni" style="margin-bottom:0;font-size:11.5px">ℹ️ Mỗi sản phẩm tự ghép theo ràng buộc riêng. Format: <span class="mono">TÊN/[VL/]LOAI_CUA/KHUNG/NAN/MAT+KC[+OPTION]</span></div>
@@ -3264,6 +3313,137 @@ function exportAll(){
     XLSX.utils.book_append_sheet(wb,wr,'Bang nguyen tac');
     XLSX.writeFile(wb,'NSCA_ToanBo_'+S.codes.length+'ma_'+new Date().toISOString().slice(0,10)+'.xlsx');
   }catch(e){alert('Lỗi xuất Excel: '+e.message);}
+}
+
+// ═══════════════════════════════════════════════════════════
+// EXPORT CATALOG FORMAT – Danh mục sản phẩm
+// Thể loại | Mã hiệu | Tên gọi | Đơn vị tính | Mô tả | [cột mở rộng...]
+// ═══════════════════════════════════════════════════════════
+// ══════════════════════════════
+// PUSH TO GOOGLE SHEET
+// ══════════════════════════════
+async function pushToGSheet(){
+  if(!GSHEET_URL){
+    const url=prompt('📊 Dán Web App URL từ Apps Script vào đảy:\n(Vào Google Sheet → Extensions → Apps Script → Deploy → Web app → Copy URL)');
+    if(!url) return;
+    GSHEET_URL=url.trim();
+    await sbSet('gsheet_url', GSHEET_URL);
+  }
+  if(!S.codes.length){alert('Chưa có mã nào để đẩy.');return;}
+
+  showDBStatus('⏳ Đang đẩy lên Google Sheet...');
+
+  // Build rows – same logic as exportCatalog
+  function getProdCodeGS(c){
+    if(c.prodCode) return c.prodCode;
+    return c.code.split('/')[0];
+  }
+  function buildDescGS(c){
+    const parts=Object.values(c.cols||{}).filter(Boolean);
+    if(parts.length) return parts.join(' / ');
+    return c.fullName||'';
+  }
+
+  const rows=S.codes.map(c=>({
+    theLoai: getProdCodeGS(c),
+    maHieu:  c.code,
+    tenGoi:  c.fullName||c.code,
+    dvt:     'cái',
+    moTa:    buildDescGS(c)
+  }));
+
+  try{
+    const res=await fetch(GSHEET_URL,{
+      method:'POST',
+      mode:'no-cors',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rows})
+    });
+    showDBStatus('✅ Đẩy xong '+rows.length+' mã lên Google Sheet!');
+    setTimeout(()=>showDBStatus(''),3000);
+    alert('✅ Đẩy thành công '+rows.length+' mã lên Google Sheet!\n\nVui lòng mở Google Sheet để kiểm tra.');
+  }catch(err){
+    showDBStatus('⚠️ Lỗi: '+err.message);
+    alert('Lỗi kết nối: '+err.message+'\n\nKiểm tra lại URL Apps Script.');
+  }
+}
+
+// Load GSHEET_URL từ Supabase khi khởi động
+async function loadGSheetUrl(){
+  const saved=await sbGet('gsheet_url');
+  if(saved) GSHEET_URL=saved;
+}
+
+
+function exportCatalog(gid){
+  const codesAll=gid?S.codes.filter(c=>c.groupId===gid):S.codes;
+  if(!codesAll.length){alert('Chưa có mã để xuất. Hãy tạo mã trước.');return;}
+  try{
+    const wb=XLSX.utils.book_new();
+    function getProdCode(c){
+      // Mã nhóm sản phẩm: SAG, DAG, VCD-H...
+      if(c.prodCode) return c.prodCode;
+      // Với CG: mã dạng SAG/F/1/1/2520 → lấy phần trước dấu /
+      return c.code.split('/')[0];
+    }
+    function buildDesc(c){
+      const parts=Object.values(c.cols||{}).filter(Boolean);
+      if(parts.length) return parts.join(' / ');
+      return c.fullName||'';
+    }
+    function buildSheet(codes){
+      const colSet=new Set();
+      codes.forEach(c=>Object.keys(c.cols||{}).forEach(k=>colSet.add(k)));
+      const colNames=Array.from(colSet);
+      const hdr=['Thể loại','Mã hiệu','Tên gọi','Đơn vị tính','Mô tả',...colNames];
+      const rows=[hdr];
+      codes.forEach(c=>{
+        rows.push([
+          getProdCode(c),
+          c.code,
+          c.fullName||c.code,
+          'cái',
+          buildDesc(c),
+          ...colNames.map(n=>(c.cols||{})[n]||'')
+        ]);
+      });
+      return {rows, colNames};
+    }
+    const {rows:mainRows,colNames:mainCols}=buildSheet(codesAll);
+    const ws=XLSX.utils.aoa_to_sheet(mainRows);
+    ws['!cols']=[{wch:12},{wch:32},{wch:65},{wch:12},{wch:65},...mainCols.map(()=>({wch:15}))];
+    XLSX.utils.book_append_sheet(wb,ws,gid?sanitizeSheet('['+gid+']'):'Tong hop');
+    if(!gid){
+      [...new Set(codesAll.map(c=>c.groupId))].forEach(gid2=>{
+        const gc=codesAll.filter(c=>c.groupId===gid2);
+        const {rows:r2,colNames:cn2}=buildSheet(gc);
+        const ws2=XLSX.utils.aoa_to_sheet(r2);
+        ws2['!cols']=[{wch:12},{wch:32},{wch:65},{wch:12},{wch:65},...cn2.map(()=>({wch:15}))];
+        XLSX.utils.book_append_sheet(wb,ws2,sanitizeSheet('['+gid2+']'));
+      });
+    }
+    const fname=gid
+      ?'DanhMuc_['+gid+']_'+new Date().toISOString().slice(0,10)+'.xlsx'
+      :'DanhMuc_ToanBo_'+new Date().toISOString().slice(0,10)+'.xlsx';
+    XLSX.writeFile(wb,fname);
+  }catch(e){alert('Lỗi xuất danh mục: '+e.message);}
+}
+
+// Thêm trường nhanh vào CG (lưu vào thư viện)
+function openAddCGField(){
+  const nm=prompt('Tên trường mới cho CG (VD: Màu sắc, Kích thước chuẩn):');
+  if(!nm) return;
+  const valsRaw=prompt('Các giá trị (CODE=Mô tả, cách nhau bởi dấu phẩy)\nVD: RAL9010=Trắng RAL, RAL7016=Xám tối','');
+  const vals=(valsRaw||'').split(',').map(v=>{
+    const eq=v.indexOf('=');
+    return eq<0?{code:v.trim(),desc:'',note:''}:{code:v.slice(0,eq).trim(),desc:v.slice(eq+1).trim(),note:''};
+  }).filter(v=>v.code);
+  const tp=confirm('Trường này là bắt buộc?\n[OK = Bắt buộc, Cancel = Tuỳ chọn]')?'required':'optional';
+  const flId='fl_cg_'+nm.toLowerCase().replace(/[^a-z0-9]/g,'_')+'_'+Date.now().toString().slice(-4);
+  FIELD_LIBRARY.push({id:flId,name:nm,desc:'Trường bổ sung CG',values:vals});
+  alert('✅ Đã thêm trường "'+nm+'" ('+vals.length+' giá trị) vào Thư viện trường.\nVào "Thư viện trường" để xem và chỉnh sửa thêm.');
+  saveToDB('field_library');
+  if(S.view==='group'&&S.gid==='CG') renderGrp('CG');
 }
 
 // ═══════════════════════════════════════════════════════════
